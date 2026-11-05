@@ -356,6 +356,11 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var hud by remember { mutableStateOf<String?>(null) }
     var menuPlayer by remember { mutableStateOf(false) }
     var telaOff by remember { mutableStateOf(prefs.telaDesligada) }
+    var zoomAuto by remember { mutableStateOf(prefs.zoomAuto) }
+    var zoomManual by remember(video.uri) { mutableStateOf(false) }
+    var textureView by remember { mutableStateOf<TextureView?>(null) }
+    var viewCw by remember { mutableFloatStateOf(0f) }
+    var viewCh by remember { mutableFloatStateOf(0f) }
     val mediaUri = video.uri
 
     val chave = remember(video.uri) { Cache.chave(ctx, video.uri) }
@@ -396,21 +401,82 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         while (true) { delay(4000); withContext(Dispatchers.IO) { Exclusao.playerAberto(ctx) } }
     }
     DisposableEffect(Unit) { onDispose { Exclusao.playerFechado(ctx); Exclusao.retomarGaleriaSePreciso(ctx) } }
+    val chavePos = remember(video.uri) { VideosMedia.chaveEstavel(video.uri.toString()) }
     DisposableEffect(video.uri) {
         // Sempre reentra imersivo a cada abertura (evita status bar por cima nas 2ª+ aberturas)
         act.telaCheia(true, paisagem = false)
-        player.setMediaItem(MediaItem.fromUri(mediaUri)); player.prepare(); player.play()
+        player.setMediaItem(MediaItem.fromUri(mediaUri))
+        player.prepare()
+        val salvo = PosicaoPrefs.obter(ctx, chavePos, video.duracao)
+        if (salvo != null && PosicaoPrefs.deveRetomar(salvo, video.duracao)) {
+            player.seekTo(salvo)
+        }
+        player.play()
         val l = object : Player.Listener {
-            override fun onIsPlayingChanged(p: Boolean) { tocando = p }
+            override fun onIsPlayingChanged(p: Boolean) {
+                tocando = p
+                if (!p) {
+                    val d = player.duration.coerceAtLeast(0L)
+                    PosicaoPrefs.salvar(ctx, chavePos, player.currentPosition, if (d > 0) d else video.duracao)
+                }
+            }
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) PosicaoPrefs.limpar(ctx, chavePos)
+            }
             override fun onVideoSizeChanged(s: VideoSize) { vsize = s }
         }
         player.addListener(l)
         onDispose {
+            val d = player.duration.coerceAtLeast(0L)
+            PosicaoPrefs.salvar(ctx, chavePos, player.currentPosition, if (d > 0) d else video.duracao)
             player.removeListener(l)
             runCatching { player.stop() }
             runCatching { player.clearMediaItems() }
             runCatching { player.release() }
             act.sairTelaCheia()
+        }
+    }
+    // Persiste a cada poucos segundos enquanto toca / em background compose.
+    LaunchedEffect(video.uri) {
+        while (true) {
+            delay(3000)
+            if (player.currentPosition > 0) {
+                val d = player.duration.coerceAtLeast(0L)
+                PosicaoPrefs.salvar(ctx, chavePos, player.currentPosition, if (d > 0) d else video.duracao)
+            }
+        }
+    }
+    LaunchedEffect(zoomAuto, zoomManual, video.uri) {
+        if (!zoomAuto || zoomManual) return@LaunchedEffect
+        var det: Detector? = null
+        try {
+            while (true) {
+                delay(750)
+                if (!zoomAuto || zoomManual) break
+                if (AnaliseWorker.rodando(ctx) || TamanhoScanService.rodando(ctx)) continue
+                val tv = textureView ?: continue
+                if (!tv.isAvailable) continue
+                val vw = viewCw; val vh = viewCh
+                if (vw < 8f || vh < 8f) continue
+                val bmp = runCatching { tv.getBitmap(320, 320) }.getOrNull() ?: continue
+                val boxes = withContext(Dispatchers.Default) {
+                    try {
+                        if (det == null) det = Detector(ctx, false)
+                        det!!.caixasCorpo(bmp, TamanhoLogica.LIMIAR)
+                    } catch (_: Throwable) {
+                        runCatching { det?.close() }; det = null
+                        emptyList()
+                    } finally {
+                        if (!bmp.isRecycled) bmp.recycle()
+                    }
+                }
+                if (boxes.size < 1) continue
+                val alvo = TamanhoLogica.zoomPanParaSujeito(boxes, vw, vh) ?: continue
+                zoom = alvo.first
+                pan = Offset(alvo.second[0], alvo.second[1])
+            }
+        } finally {
+            runCatching { det?.close() }
         }
     }
     // Reaplica imersivo se o sistema devolver as barras
@@ -488,6 +554,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black).clipToBounds()) {
         val d = LocalDensity.current
         val cw = with(d) { maxWidth.toPx() }; val ch = with(d) { maxHeight.toPx() }
+        SideEffect { viewCw = cw; viewCh = ch }
         val vw = vsize.width * (if (vsize.pixelWidthHeightRatio > 0) vsize.pixelWidthHeightRatio else 1f); val vh = vsize.height.toFloat()
         val (w, h) = tamanhoVideo(modo, cw, ch, vw, vh)
         val wDp by animateDpAsState(with(d) { w.toDp() }, spring(stiffness = 500f), label = "w")
@@ -497,7 +564,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         val videoMod2 = if (avs != null) {
             with(sts) { videoMod.sharedBounds(rememberSharedContentState("v-${video.uri}"), avs, resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds) }
         } else videoMod
-        AndroidView({ TextureView(it).also { tv -> player.setVideoTextureView(tv) } }, videoMod2)
+        AndroidView({ TextureView(it).also { tv -> textureView = tv; player.setVideoTextureView(tv) } }, videoMod2)
         Box(Modifier.fillMaxSize()
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { controles = !controles },
@@ -521,6 +588,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                                 val nz = (zoom * zf).coerceIn(1f, 5f)
                                 val mx = (nz - 1f) * cw / 2; val my = (nz - 1f) * ch / 2
                                 zoom = nz; pan = Offset((pan.x + pf.x).coerceIn(-mx, mx), (pan.y + pf.y).coerceIn(-my, my))
+                                if (zoomAuto) zoomManual = true
                                 hud = "Zoom ${(nz * 100).toInt()}%"
                                 ev.changes.forEach { if (it.positionChanged()) it.consume() }
                             }
@@ -588,6 +656,17 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                                     telaOff = !telaOff
                                     prefs.telaDesligada = telaOff
                                     hud = if (telaOff) "Tela desligada: áudio continua" else "Tela permanece ligada"
+                                    menuPlayer = false
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (zoomAuto) "Zoom automático: ligado" else "Zoom automático") },
+                                onClick = {
+                                    zoomAuto = !zoomAuto
+                                    prefs.zoomAuto = zoomAuto
+                                    zoomManual = false
+                                    if (!zoomAuto) resetZoom()
+                                    hud = if (zoomAuto) "Zoom automático ligado" else "Zoom automático desligado"
                                     menuPlayer = false
                                 },
                             )

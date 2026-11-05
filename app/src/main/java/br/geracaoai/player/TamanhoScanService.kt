@@ -309,6 +309,32 @@ class TamanhoScanService : Service() {
         }
     }
 
+    /** Tempos preferenciais: hits de nudez da análise por vídeo, senão grade uniforme. */
+    private fun temposAmostra(ctx: Context, uri: Uri, dur: Long): LongArray {
+        val hits = ArrayList<Long>()
+        runCatching {
+            val chave = Cache.chave(ctx, uri)
+            val a = Cache.carregar(ctx, chave)?.first ?: return@runCatching
+            val lim = Prefs(ctx).limiar
+            for (c in listOf(Categoria.PEITO, Categoria.BUNDA, Categoria.BUCETA, Categoria.ANUS)) {
+                val sc = a.scores[c] ?: continue
+                for (i in a.tempos.indices) {
+                    if (i < sc.size && sc[i] >= lim) hits.add(a.tempos[i].coerceIn(0L, dur))
+                }
+            }
+        }
+        if (hits.size >= 2) {
+            val uniq = hits.distinct().sorted()
+            if (uniq.size <= FRAMES) return uniq.toLongArray()
+            // Amostra uniforme sobre os hits de nudez.
+            return LongArray(FRAMES) { i ->
+                val ix = ((i + 0.5f) / FRAMES * uniq.size).toInt().coerceIn(0, uniq.lastIndex)
+                uniq[ix]
+            }
+        }
+        return LongArray(FRAMES) { i -> (dur * (2 * i + 1)) / (2 * FRAMES) }
+    }
+
     private fun medir(ctx: Context, uri: Uri, det: Detector): TamanhoLogica.Evidencia {
         val mmr = MediaMetadataRetriever()
         var acc = TamanhoLogica.Evidencia()
@@ -320,26 +346,26 @@ class TamanhoScanService : Service() {
             val dur = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
                 ?: return acc
             if (dur <= 0) return acc
-            for (i in 0 until FRAMES) {
+            val tempos = temposAmostra(ctx, uri, dur)
+            for (t in tempos) {
                 if (stop.get()) break
-                val t = (dur * (2 * i + 1)) / (2 * FRAMES)
                 var bmp: Bitmap? = null
                 try {
                     bmp = mmr.getScaledFrameAtTime(
                         t * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, FRAME_MAX, FRAME_MAX,
                     ) ?: continue
-                    val ev = det.pontuarDetalhe(bmp, OrganizarWorker.LIMIAR)
+                    val ev = det.pontuarDetalhe(bmp, TamanhoLogica.LIMIAR)
                     acc = TamanhoLogica.acumular(acc, ev)
                     if (ev.areaPeito > 0f) peitos.add(ev.areaPeito)
                     if (ev.areaBunda > 0f) bundas.add(ev.areaBunda)
                     if (ev.areaBuceta > 0f) bucetas.add(ev.areaBuceta)
                 } finally { bmp?.let { if (!it.isRecycled) it.recycle() } }
             }
-            // Mediana consistente (≥3 frames com referência); sem isso → 0 (incerto).
+            // ≥1 frame válido basta; com vários, mediana com filtro leve de outliers.
             acc.copy(
-                areaPeito = TamanhoLogica.metricaConsistente(peitos, 3),
-                areaBunda = TamanhoLogica.metricaConsistente(bundas, 3),
-                areaBuceta = TamanhoLogica.metricaConsistente(bucetas, 3),
+                areaPeito = TamanhoLogica.metricaConsistente(peitos, 1),
+                areaBunda = TamanhoLogica.metricaConsistente(bundas, 1),
+                areaBuceta = TamanhoLogica.metricaConsistente(bucetas, 1),
             )
         } catch (e: Throwable) {
             Log.w(TAG, "skip $uri", e); acc

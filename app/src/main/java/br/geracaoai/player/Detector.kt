@@ -188,10 +188,9 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
 
 
     /**
-     * Detalhe p/ pastas Por tamanho (métrica v2). NÃO usado na análise por vídeo.
-     * Extrai caixas YOLO e normaliza por escala corporal no mesmo frame.
+     * Detalhe p/ pastas Por tamanho (métrica v3). NÃO usado na análise por vídeo.
      */
-    fun pontuarDetalhe(frame: Bitmap, limiar: Float = OrganizarWorker.LIMIAR): TamanhoLogica.Evidencia {
+    fun pontuarDetalhe(frame: Bitmap, limiar: Float = TamanhoLogica.LIMIAR): TamanhoLogica.Evidencia {
         preparar(frame)
         OnnxTensor.createTensor(env, buf, longArrayOf(1, 3, S.toLong(), S.toLong())).use { tensor ->
             sessao.run(mapOf(sessao.inputNames.first() to tensor)).use { r ->
@@ -222,20 +221,29 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
                     return m
                 }
                 okRodou()
+                val limRef = limiar * 0.75f
                 val peitos = caixas(TamanhoLogica.FEMALE_BREAST_EXPOSED, limiar, 2)
                 val bunda = top(TamanhoLogica.BUTTOCKS_EXPOSED)
                 val buceta = top(TamanhoLogica.FEMALE_GENITALIA_EXPOSED)
-                val face = top(TamanhoLogica.FACE_FEMALE, limiar * 0.85f) // face um pouco mais permissiva p/ escala
-                val belly = top(TamanhoLogica.BELLY_EXPOSED, limiar * 0.85f)
-                val armpit = top(TamanhoLogica.ARMPITS_EXPOSED, limiar * 0.85f)
-                val feet = top(TamanhoLogica.FEET_EXPOSED, limiar * 0.85f)
+                val face = top(TamanhoLogica.FACE_FEMALE, limRef)
+                val belly = top(TamanhoLogica.BELLY_EXPOSED, limRef)
+                    ?: top(TamanhoLogica.BELLY_COVERED, limRef)
+                val armpit = top(TamanhoLogica.ARMPITS_EXPOSED, limRef)
+                    ?: top(TamanhoLogica.ARMPITS_COVERED, limRef)
+                val feet = top(TamanhoLogica.FEET_EXPOSED, limRef)
+                    ?: top(TamanhoLogica.FEET_COVERED, limRef)
+                // União de partes do corpo (escala fallback — não o frame inteiro).
+                val pessoa = ArrayList<TamanhoLogica.Caixa>(12)
+                for (idx in TamanhoLogica.CLASSES_CORPO) {
+                    pessoa.addAll(caixas(idx, limRef, 1))
+                }
                 val fbSc = peitos.maxOfOrNull { it.sc } ?: 0f
                 val buSc = bunda?.sc ?: 0f
                 val fgSc = buceta?.sc ?: 0f
                 val ffSc = face?.sc ?: maxSc(TamanhoLogica.FACE_FEMALE)
-                val ap = TamanhoLogica.metricaPeito(peitos, face, belly, armpit, feet)
-                val ab = TamanhoLogica.metricaBunda(bunda, face, belly, armpit, feet)
-                val abu = TamanhoLogica.metricaBuceta(buceta, face, belly, armpit, feet)
+                val ap = TamanhoLogica.metricaPeito(peitos, face, belly, armpit, feet, pessoa)
+                val ab = TamanhoLogica.metricaBunda(bunda, face, belly, armpit, feet, pessoa)
+                val abu = TamanhoLogica.metricaBuceta(buceta, face, belly, armpit, feet, pessoa)
                 return TamanhoLogica.Evidencia(
                     faceFemale = ffSc,
                     faceMale = maxSc(TamanhoLogica.FACE_MALE),
@@ -255,6 +263,53 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
                     hitsBunda = if (ab > 0f) 1 else 0,
                     hitsBuceta = if (abu > 0f) 1 else 0,
                 )
+            }
+        }
+    }
+
+    /**
+     * Caixas de partes do corpo p/ zoom automático (thread do caller).
+     * Não usar em paralelo com pontuar/pontuarDetalhe na mesma instância.
+     */
+    @Synchronized
+    fun caixasCorpo(frame: Bitmap, limiar: Float = TamanhoLogica.LIMIAR): List<TamanhoLogica.Caixa> {
+        preparar(frame)
+        OnnxTensor.createTensor(env, buf, longArrayOf(1, 3, S.toLong(), S.toLong())).use { tensor ->
+            sessao.run(mapOf(sessao.inputNames.first() to tensor)).use { r ->
+                val out = (r[0] as OnnxTensor)
+                val a = out.info.shape[2].toInt()
+                val fb = out.floatBuffer
+                val s = S.toFloat()
+                val limRef = limiar * 0.75f
+                val outBoxes = ArrayList<TamanhoLogica.Caixa>(16)
+                // Preferência feminina / corpo: face, peito, barriga, bunda, gen, pés, axilas.
+                val idxs = intArrayOf(
+                    TamanhoLogica.FACE_FEMALE,
+                    TamanhoLogica.FEMALE_BREAST_EXPOSED,
+                    TamanhoLogica.BELLY_EXPOSED, TamanhoLogica.BELLY_COVERED,
+                    TamanhoLogica.BUTTOCKS_EXPOSED,
+                    TamanhoLogica.FEMALE_GENITALIA_EXPOSED,
+                    TamanhoLogica.FEET_EXPOSED, TamanhoLogica.FEET_COVERED,
+                    TamanhoLogica.ARMPITS_EXPOSED, TamanhoLogica.ARMPITS_COVERED,
+                )
+                for (idx in idxs) {
+                    val base = (4 + idx) * a
+                    var best: TamanhoLogica.Caixa? = null
+                    for (i in 0 until a) {
+                        val v = fb.get(base + i)
+                        if (v < limRef) continue
+                        val cx = fb.get(0 * a + i) / s
+                        val cy = fb.get(1 * a + i) / s
+                        val w = (fb.get(2 * a + i) / s).coerceAtLeast(0f)
+                        val h = (fb.get(3 * a + i) / s).coerceAtLeast(0f)
+                        if (w < 0.008f || h < 0.008f) continue
+                        val c = TamanhoLogica.Caixa(v, cx, cy, w.coerceAtMost(1.5f), h.coerceAtMost(1.5f))
+                        if (best == null || c.sc > best.sc) best = c
+                    }
+                    best?.let { outBoxes.add(it) }
+                }
+                okRodou()
+                return outBoxes
             }
         }
     }

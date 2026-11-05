@@ -207,19 +207,18 @@ fun Biblioteca(
         val vs = videos ?: return@remember emptyList()
         fun res(v: Video) = orgMap[VideosMedia.chaveEstavel(v.uri.toString())] ?: orgMap[v.uri.toString()]
         val nude = vs.filter { res(it)?.classif == ClassifNudez.NUDE }
-        fun par(sel: (ResultadoOrg) -> Float, cat: Categoria?): Pair<List<Video>, List<Video>> {
+        // Métrica >0 já implica parte EXPOSED medida — não filtrar por cats (encolhia demais).
+        fun par(sel: (ResultadoOrg) -> Float): Pair<List<Video>, List<Video>> {
             val scored = nude.mapNotNull { v ->
                 val r = res(v) ?: return@mapNotNull null
-                // Exige categoria UI correspondente quando conhecida (evita COVERED/biquíni sem EXPOSED).
-                if (cat != null && r.cats.isNotEmpty() && cat !in r.cats) return@mapNotNull null
                 val a = sel(r); if (a <= 0f) null else v to a
             }
             val (g, p) = TamanhoLogica.partirPorTamanho(scored)
             return g.map { it.first } to p.map { it.first }
         }
-        val (peituda, peitinho) = par({ it.areaPeito }, Categoria.PEITO)
-        val (rabuda, rabinho) = par({ it.areaBunda }, Categoria.BUNDA)
-        val (bucetuda, bucetinha) = par({ it.areaBuceta }, Categoria.BUCETA)
+        val (peituda, peitinho) = par({ it.areaPeito })
+        val (rabuda, rabinho) = par({ it.areaBunda })
+        val (bucetuda, bucetinha) = par({ it.areaBuceta })
         listOf(
             Pasta("__peituda", "Peituda", peituda),
             Pasta("__peitinho", "Peitinho", peitinho),
@@ -896,6 +895,10 @@ private fun PastaVideosTela(
 private fun TileVideoDenso(
     v: Video, sts: SharedTransitionScope, avs: AnimatedVisibilityScope, nude: Boolean, prog: Float? = null, onClick: () -> Unit,
 ) {
+    val ctxTile = LocalContext.current
+    val fracPos = remember(v.uri, v.duracao) {
+        PosicaoPrefs.fracao(ctxTile, VideosMedia.chaveEstavel(v.uri.toString()), v.duracao)
+    }
     with(sts) {
         Box(
             Modifier.fillMaxWidth().aspectRatio(1f).toque(onClick = onClick)
@@ -903,6 +906,17 @@ private fun TileVideoDenso(
                 .clip(RoundedCornerShape(4.dp)),
         ) {
             Thumb(v.uri, Modifier.fillMaxSize(), w = 240, h = 240)
+            if (fracPos != null && fracPos > 0.02f && fracPos < 0.98f) {
+                Box(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(2.dp)
+                        .background(Color(0x55000000)),
+                ) {
+                    Box(
+                        Modifier.fillMaxHeight().fillMaxWidth(fracPos)
+                            .background(Cores.Magenta.copy(alpha = 0.85f)),
+                    )
+                }
+            }
             Text(
                 fmt(v.duracao),
                 Modifier.align(Alignment.BottomEnd).padding(4.dp)
