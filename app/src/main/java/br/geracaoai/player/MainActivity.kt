@@ -24,6 +24,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.*
@@ -177,38 +179,43 @@ class MainActivity : ComponentActivity() {
                     SharedTransitionLayout {
                         val playerAberto = nav.value.video != null
                         val ajustesAberto = nav.value.ajustes
-                        // Destinos EXCLUSIVOS: um player só, sem empilhar AnimatedVisibility.
-                        // rememberSaveable na Biblioteca sobrevive ao sair/voltar (registry da Activity).
+                        // Biblioteca permanece composta sob o player (scroll/aba/pasta intactos).
                         when {
                             ajustesAberto -> {
                                 BackHandler { nav.value = Nav() }
                                 Ajustes { nav.value = Nav() }
                             }
-                            playerAberto -> {
-                                val v = nav.value.video!!
-                                fun fecharPlayer() {
-                                    sairTelaCheia()
-                                    nav.value = Nav()
-                                }
-                                BackHandler { fecharPlayer() }
-                                // key(uri) força dispose completo do ExoPlayer ao trocar/fechar
-                                key(v.uri.toString()) {
-                                    Box(Modifier.fillMaxSize().background(Color.Black)) {
-                                        PlayerTela(v, this@MainActivity, this@SharedTransitionLayout, null) {
-                                            fecharPlayer()
+                            else -> {
+                                Box(Modifier.fillMaxSize()) {
+                                    // visible=true sempre: não dispose ao abrir vídeo
+                                    androidx.compose.animation.AnimatedVisibility(
+                                        visible = true,
+                                        enter = EnterTransition.None,
+                                        exit = ExitTransition.None,
+                                    ) {
+                                        Biblioteca(
+                                            this@SharedTransitionLayout, this,
+                                            onAbrir = { nav.value = Nav(it) },
+                                            onAjustes = { },
+                                            videoDeUri = ::videoDeUri,
+                                            ativa = !playerAberto,
+                                        )
+                                    }
+                                    if (playerAberto) {
+                                        val v = nav.value.video!!
+                                        fun fecharPlayer() {
+                                            sairTelaCheia()
+                                            nav.value = Nav()
+                                        }
+                                        BackHandler { fecharPlayer() }
+                                        key(v.uri.toString()) {
+                                            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                                                PlayerTela(v, this@MainActivity, this@SharedTransitionLayout, null) {
+                                                    fecharPlayer()
+                                                }
+                                            }
                                         }
                                     }
-                                }
-                            }
-                            else -> {
-                                androidx.compose.animation.AnimatedVisibility(visible = true) {
-                                    Biblioteca(
-                                        this@SharedTransitionLayout, this,
-                                        onAbrir = { nav.value = Nav(it) },
-                                        onAjustes = { },
-                                        videoDeUri = ::videoDeUri,
-                                        ativa = true,
-                                    )
                                 }
                             }
                         }
@@ -303,31 +310,13 @@ fun Ajustes(voltar: () -> Unit) {
             android.widget.Toast.makeText(ctx, "Reclassificando a galeria do zero…", android.widget.Toast.LENGTH_SHORT).show() }
         var cacheInfo by remember { mutableStateOf<String?>(null) }
         LaunchedEffect(Unit) {
-            cacheInfo = withContext(Dispatchers.IO) {
-                "Cache ~${fmtTam(CacheLimpeza.tamanhoCache(ctx))} · Melhorados ~${fmtTam(CacheLimpeza.tamanhoMelhorados(ctx))}"
-            }
+            cacheInfo = withContext(Dispatchers.IO) { "Cache ~${fmtTam(CacheLimpeza.tamanhoCache(ctx))}" }
         }
         cacheInfo?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = Cores.Suave) }
         BotaoVidro("Limpar cache", icone = { Icon(Icons.Default.CleaningServices, null, tint = Cores.Texto) }) {
             val freed = CacheLimpeza.limpar(ctx)
-            cacheInfo = "Cache ~${fmtTam(CacheLimpeza.tamanhoCache(ctx))} · Melhorados ~${fmtTam(CacheLimpeza.tamanhoMelhorados(ctx))}"
+            cacheInfo = "Cache ~${fmtTam(CacheLimpeza.tamanhoCache(ctx))}"
             android.widget.Toast.makeText(ctx, "Liberou ${fmtTam(freed)} (análises e vídeos intactos)", android.widget.Toast.LENGTH_LONG).show()
-        }
-        var melhorados by remember { mutableStateOf(CacheLimpeza.listarMelhorados(ctx)) }
-        if (melhorados.isNotEmpty()) {
-            Cartao {
-                Text("Cópias melhoradas", style = MaterialTheme.typography.titleMedium)
-                Text("${melhorados.size} arquivo(s) · ${fmtTam(melhorados.sumOf { it.length() })}", style = MaterialTheme.typography.bodySmall, color = Cores.Suave)
-                melhorados.forEach { f ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(f.name, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(fmtTam(f.length()), style = MaterialTheme.typography.labelSmall, color = Cores.Suave)
-                        }
-                        TextButton({ f.delete(); melhorados = CacheLimpeza.listarMelhorados(ctx) }) { Text("Apagar") }
-                    }
-                }
-            }
         }
         BotaoVidro("Apagar análises salvas", icone = { Icon(Icons.Default.DeleteSweep, null, tint = Cores.Texto) }) {
             Cache.limpar(ctx); android.widget.Toast.makeText(ctx, "Análises apagadas", android.widget.Toast.LENGTH_SHORT).show() }
@@ -365,39 +354,9 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var nivelVol by remember { mutableFloatStateOf(am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVol) }
     var brilho by remember { mutableFloatStateOf(act.window.attributes.screenBrightness.takeIf { it >= 0 } ?: 0.5f) }
     var hud by remember { mutableStateOf<String?>(null) }
-    var traduzirLegenda by remember { mutableStateOf(LegendaEngine.preferencia(ctx, video.uri)) }
-    var cues by remember { mutableStateOf(LegendaEngine.carregar(ctx, video.uri)) }
-    var legendaStatus by remember { mutableStateOf<String?>(null) }
     var menuPlayer by remember { mutableStateOf(false) }
     var telaOff by remember { mutableStateOf(prefs.telaDesligada) }
-    var melhorProg by remember { mutableStateOf<Pair<Float, String?>?>(null) }
-    var legendaProg by remember { mutableStateOf<Float?>(null) }
-    var mediaUri by remember(video.uri) { mutableStateOf(video.uri) }
-    LaunchedEffect(video.uri) {
-        while (true) {
-            withContext(Dispatchers.IO) {
-                melhorProg = MelhorarProgresso.get(ctx, video.uri.toString())
-                legendaProg = if (traduzirLegenda) LegendaProgresso.get(ctx, video.uri.toString()) else null
-            }
-            val done = melhorProg?.second
-            if (done != null && melhorProg!!.first >= 0.999f) {
-                val novo = Uri.parse(done)
-                if (mediaUri != novo) {
-                    val posKeep = player.currentPosition
-                    mediaUri = novo
-                    player.setMediaItem(MediaItem.fromUri(novo))
-                    player.prepare()
-                    player.seekTo(posKeep)
-                    player.play()
-                    MelhorarProgresso.clear(ctx, video.uri.toString())
-                    melhorProg = null
-                    hud = "Imagem melhorada"
-                }
-            }
-            delay(500)
-        }
-    }
-    DisposableEffect(Unit) { onDispose { LegendaEngine.parar() } }
+    val mediaUri = video.uri
 
     val chave = remember(video.uri) { Cache.chave(ctx, video.uri) }
     var analise by remember(video.uri) { mutableStateOf(Cache.carregar(ctx, chave)) }
@@ -410,18 +369,6 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     LaunchedEffect(aba) { prefs.cats = setOf(aba) }
     var pos by remember { mutableLongStateOf(0L) }
     var dur by remember { mutableLongStateOf(0L) }
-    val cueAtual = remember(cues, pos) { cues.lastOrNull { pos in it.t0..it.t1 } }
-    LaunchedEffect(traduzirLegenda, video.uri) {
-        if (traduzirLegenda) {
-            LegendaEngine.iniciar(ctx, video.uri, player.currentPosition,
-                onCue = { c -> cues = cues + c },
-                onStatus = { legendaStatus = it },
-            )
-        } else {
-            LegendaEngine.parar(); legendaStatus = null
-        }
-    }
-    LaunchedEffect(pos) { if (traduzirLegenda) LegendaEngine.seek(pos) }
     var tocando by remember { mutableStateOf(false) }
     // Mantém tela ligada ao tocar; opção "tela desligada" usa wake lock local p/ continuar o áudio.
     DisposableEffect(tocando, telaOff) {
@@ -600,34 +547,6 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         AnimatedVisibility(hud != null, Modifier.align(Alignment.Center), enter = fadeIn() + scaleIn(spring(0.5f, 600f), 0.8f), exit = fadeOut()) {
             Text(hud ?: "", Modifier.vidro(RoundedCornerShape(16.dp), 0.6f).padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.titleSmall, color = Color.White)
         }
-        // Indicadores discretos (melhorar / legenda) no canto
-        Column(
-            Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            melhorProg?.let { (frac, _) ->
-                if (frac < 0.999f) {
-                    Text(
-                        "↑ ${(frac * 100).toInt()}%",
-                        Modifier.background(Color(0x66000000), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        color = Color.White, style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            }
-            legendaProg?.let { frac ->
-                if (frac < 0.999f) {
-                    Text(
-                        "Aa ${(frac * 100).toInt()}%",
-                        Modifier.background(Color(0x66000000), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        color = Color.White, style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            }
-        }
-
         // —— TOPO: voltar + pills + números + ícone buscar ——
         AnimatedVisibility(controles, Modifier.align(Alignment.TopCenter).statusBarsPadding(),
             enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 }) {
@@ -663,22 +582,6 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                             Icon(Icons.Default.MoreVert, "Menu", tint = Color.White, modifier = Modifier.size(18.dp))
                         }
                         DropdownMenu(menuPlayer, { menuPlayer = false }) {
-                            DropdownMenuItem(
-                                text = { Text(if (traduzirLegenda) "Traduzir legenda: ligado" else "Traduzir legenda") },
-                                onClick = {
-                                    traduzirLegenda = !traduzirLegenda
-                                    LegendaEngine.preferencia(ctx, video.uri, traduzirLegenda)
-                                    menuPlayer = false
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Melhorar imagem") },
-                                onClick = {
-                                    MelhorarService.iniciar(ctx, video.uri, video.nome)
-                                    android.widget.Toast.makeText(ctx, "Melhorando em segundo plano…", android.widget.Toast.LENGTH_SHORT).show()
-                                    menuPlayer = false
-                                },
-                            )
                             DropdownMenuItem(
                                 text = { Text(if (telaOff) "Tela desligada: ligado" else "Tocar com tela desligada") },
                                 onClick = {
@@ -746,27 +649,6 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                             }
                         }
                     }
-                }
-            }
-        }
-
-        // —— LEGENDA cinema ——
-        if (traduzirLegenda) {
-            Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp, start = 24.dp, end = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                if (cueAtual == null && legendaStatus != null && legendaStatus != "Pronto") {
-                    Text(legendaStatus ?: "Traduzindo…", color = Color(0xCCFFFFFF), style = MaterialTheme.typography.labelSmall)
-                }
-                cueAtual?.let { c ->
-                    Text(
-                        c.pt.ifBlank { c.en },
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            shadow = androidx.compose.ui.graphics.Shadow(Color.Black, blurRadius = 6f),
-                        ),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
                 }
             }
         }

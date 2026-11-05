@@ -90,10 +90,11 @@ fun Biblioteca(
     var orgTick by remember { mutableIntStateOf(0) }
 
     var aba by rememberSaveable { mutableStateOf(AbaGaleria.ALBUNS.name) }
+    var abaAnterior by rememberSaveable { mutableStateOf(AbaGaleria.ALBUNS.name) }
     val abaAtual = runCatching { AbaGaleria.valueOf(aba) }.getOrDefault(AbaGaleria.ALBUNS)
     var pastaId by rememberSaveable { mutableStateOf<String?>(null) }
     var busca by rememberSaveable { mutableStateOf("") }
-    var ordem by rememberSaveable { mutableStateOf(Ordenacao.MAIS_NOVOS.name) }
+    var ordem by rememberSaveable { mutableStateOf(OrdemPrefs.get(ctx, "__videos", Ordenacao.MAIS_NOVOS).name) }
     var menuOrdem by remember { mutableStateOf(false) }
     var colsVideos by rememberSaveable { mutableIntStateOf(4) }
     var colsAlbuns by rememberSaveable { mutableIntStateOf(3) }
@@ -197,27 +198,31 @@ fun Biblioteca(
             if (pend.isNotEmpty()) add(Pasta("__pend", "Não analisados", pend))
         }
     }
-    // Pastas de tamanho: só com áreas já medidas; senão o toque dispara job sob demanda.
+    // Pastas de tamanho: métrica bruta no DB; split topo/fundo ~40% (pares disjuntos).
     val pastasTamanho = remember(videos, orgMap) {
         val vs = videos ?: return@remember emptyList()
         fun res(v: Video) = orgMap[VideosMedia.chaveEstavel(v.uri.toString())] ?: orgMap[v.uri.toString()]
         val nude = vs.filter { res(it)?.classif == ClassifNudez.NUDE }
-        fun pasta(id: String, nome: String, sel: (ResultadoOrg) -> Float, asc: Boolean): Pasta? {
+        fun par(sel: (ResultadoOrg) -> Float, cat: Categoria?): Pair<List<Video>, List<Video>> {
             val scored = nude.mapNotNull { v ->
                 val r = res(v) ?: return@mapNotNull null
+                // Exige categoria UI correspondente quando conhecida (evita COVERED/biquíni sem EXPOSED).
+                if (cat != null && r.cats.isNotEmpty() && cat !in r.cats) return@mapNotNull null
                 val a = sel(r); if (a <= 0f) null else v to a
             }
-            if (scored.isEmpty()) return Pasta(id, nome, emptyList()) // tile ainda aparece p/ iniciar job
-            val ord = if (asc) scored.sortedBy { it.second } else scored.sortedByDescending { it.second }
-            return Pasta(id, nome, ord.map { it.first })
+            val (g, p) = TamanhoLogica.partirPorTamanho(scored)
+            return g.map { it.first } to p.map { it.first }
         }
-        listOfNotNull(
-            pasta("__peituda", "Peituda", { it.areaPeito }, false),
-            pasta("__peitinho", "Peitinho", { it.areaPeito }, true),
-            pasta("__rabuda", "Rabuda", { it.areaBunda }, false),
-            pasta("__rabinho", "Rabinho", { it.areaBunda }, true),
-            pasta("__bucetuda", "Bucetuda", { it.areaBuceta }, false),
-            pasta("__bucetinha", "Bucetinha", { it.areaBuceta }, true),
+        val (peituda, peitinho) = par({ it.areaPeito }, Categoria.PEITO)
+        val (rabuda, rabinho) = par({ it.areaBunda }, Categoria.BUNDA)
+        val (bucetuda, bucetinha) = par({ it.areaBuceta }, Categoria.BUCETA)
+        listOf(
+            Pasta("__peituda", "Peituda", peituda),
+            Pasta("__peitinho", "Peitinho", peitinho),
+            Pasta("__rabuda", "Rabuda", rabuda),
+            Pasta("__rabinho", "Rabinho", rabinho),
+            Pasta("__bucetuda", "Bucetuda", bucetuda),
+            Pasta("__bucetinha", "Bucetinha", bucetinha),
         )
     }
     val pastaSel = remember(pastaId, pastas, albumsVirtuais, pastasTamanho) {
@@ -239,6 +244,11 @@ fun Biblioteca(
     BackHandler(enabled = ativa && pastaSel != null) {
         guardarScrolls(); pastaId = null; busca = ""
     }
+    // Dentro de uma aba (sem pasta): volta à aba anterior, não sai do app.
+    BackHandler(enabled = ativa && pastaSel == null && abaAtual != AbaGaleria.ALBUNS) {
+        guardarScrolls()
+        aba = abaAnterior
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         when {
@@ -255,7 +265,11 @@ fun Biblioteca(
                 videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
                 onPermitir = { pedir.launch(perm) },
                 onAbrir = { guardarScrolls(); onAbrir(it) },
-                sts = sts, avs = avs, orgMap = orgMap, analiseProg = analiseProg,
+                sts = sts, avs = avs, orgMap = orgMap, embMap = embMap,
+                analiseProg = analiseProg,
+                ordem = ordemAtual,
+                onOrdem = { o -> ordem = o.name; OrdemPrefs.set(ctx, "__videos", o) },
+                menuOrdem = menuOrdem, onMenuOrdem = { menuOrdem = it },
                 cols = colsVideos, onCols = { colsVideos = it.coerceIn(3, 5) },
                 gridState = scrollVideos, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
             )
@@ -306,7 +320,11 @@ fun Biblioteca(
                 aba = abaAtual,
                 onAba = { nova ->
                     guardarScrolls()
+                    if (nova.name != aba) abaAnterior = aba
                     aba = nova.name
+                    if (nova == AbaGaleria.VIDEOS) {
+                        ordem = OrdemPrefs.get(ctx, "__videos", Ordenacao.MAIS_NOVOS).name
+                    }
                 },
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
@@ -349,10 +367,26 @@ private fun BarraInferiorSamsung(aba: AbaGaleria, onAba: (AbaGaleria) -> Unit, m
 private fun AbaVideos(
     videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean, onPermitir: () -> Unit, onAbrir: (Video) -> Unit,
     sts: SharedTransitionScope, avs: AnimatedVisibilityScope, orgMap: Map<String, ResultadoOrg>,
+    embMap: Map<String, FloatArray>,
     analiseProg: Map<String, Float>,
+    ordem: Ordenacao, onOrdem: (Ordenacao) -> Unit, menuOrdem: Boolean, onMenuOrdem: (Boolean) -> Unit,
     cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState, onAbrirArquivo: () -> Unit,
 ) {
-    val lista = videos ?: emptyList()
+    val brutos = videos ?: emptyList()
+    val lista = remember(brutos, ordem, embMap) {
+        when (ordem) {
+            Ordenacao.MAIS_NOVOS -> brutos.sortedByDescending { it.dataMod }
+            Ordenacao.MAIS_ANTIGOS -> brutos.sortedBy { it.dataMod }
+            Ordenacao.MAIS_LONGOS -> brutos.sortedByDescending { it.duracao }
+            Ordenacao.MAIS_CURTOS -> brutos.sortedBy { it.duracao }
+            Ordenacao.MAIS_PESADOS -> brutos.sortedByDescending { it.tamanho }
+            Ordenacao.MAIS_LEVES -> brutos.sortedBy { it.tamanho }
+            Ordenacao.MAIOR_RES -> brutos.sortedByDescending { it.pixels }
+            Ordenacao.MENOR_RES -> brutos.sortedBy { it.pixels }
+            Ordenacao.NOME -> brutos.sortedBy { it.nome.lowercase() }
+            Ordenacao.SEMELHANCA -> Semelhanca.ordenarPorSemelhanca(brutos, embMap)
+        }
+    }
     Column(Modifier.fillMaxSize().pointerInput(cols) {
         detectTransformGestures { _, _, zoom, _ ->
             if (zoom > 1.08f) onCols(cols - 1) else if (zoom < 0.92f) onCols(cols + 1)
@@ -363,8 +397,26 @@ private fun AbaVideos(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("Vídeos", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold), color = Color.White, modifier = Modifier.weight(1f))
+            Box {
+                IconButton(onClick = { onMenuOrdem(true) }) { Icon(Icons.AutoMirrored.Filled.Sort, "Ordenar", tint = Color.White) }
+                DropdownMenu(menuOrdem, { onMenuOrdem(false) }) {
+                    Ordenacao.entries.forEach { o ->
+                        DropdownMenuItem(
+                            text = { Text(o.rotulo) },
+                            onClick = { onOrdem(o); onMenuOrdem(false) },
+                            trailingIcon = { if (o == ordem) Icon(Icons.Default.Check, null) },
+                        )
+                    }
+                }
+            }
             IconButton(onClick = onAbrirArquivo) { Icon(Icons.Default.FolderOpen, "Abrir arquivo", tint = Color.White) }
         }
+        Text(
+            "Ordenar: ${ordem.rotulo}",
+            Modifier.padding(horizontal = 16.dp, vertical = 2.dp).toque { onMenuOrdem(true) }
+                .clip(RoundedCornerShape(50)).background(Color(0x22FFFFFF)).padding(horizontal = 10.dp, vertical = 4.dp),
+            color = Color(0xCCFFFFFF), style = MaterialTheme.typography.labelSmall,
+        )
         if (!temPerm) {
             BotaoGradiente("Permitir acesso aos vídeos", Modifier.padding(16.dp), onClick = onPermitir)
             return

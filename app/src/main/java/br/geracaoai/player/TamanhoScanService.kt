@@ -86,6 +86,16 @@ class TamanhoScanService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        // Android 14+: startForeground antes do timeout (evita ForegroundServiceDidNotStartInTimeException).
+        runCatching { subir(0, "Preparando…") }
+            .onFailure { e ->
+                App.gravarErro(this, "tamanho-onCreate", e)
+                stopSelf()
+            }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
@@ -220,6 +230,9 @@ class TamanhoScanService : Service() {
     private fun medir(ctx: Context, uri: Uri, det: Detector): TamanhoLogica.Evidencia {
         val mmr = MediaMetadataRetriever()
         var acc = TamanhoLogica.Evidencia()
+        val peitos = ArrayList<Float>()
+        val bundas = ArrayList<Float>()
+        val bucetas = ArrayList<Float>()
         return try {
             mmr.setDataSource(ctx, uri)
             val dur = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
@@ -233,10 +246,19 @@ class TamanhoScanService : Service() {
                     bmp = mmr.getScaledFrameAtTime(
                         t * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, FRAME_MAX, FRAME_MAX,
                     ) ?: continue
-                    acc = TamanhoLogica.acumular(acc, det.pontuarDetalhe(bmp, OrganizarWorker.LIMIAR))
+                    val ev = det.pontuarDetalhe(bmp, OrganizarWorker.LIMIAR)
+                    acc = TamanhoLogica.acumular(acc, ev)
+                    if (ev.areaPeito > 0f) peitos.add(ev.areaPeito)
+                    if (ev.areaBunda > 0f) bundas.add(ev.areaBunda)
+                    if (ev.areaBuceta > 0f) bucetas.add(ev.areaBuceta)
                 } finally { bmp?.let { if (!it.isRecycled) it.recycle() } }
             }
-            acc
+            // Métrica bruta = mediana nos frames (estável); hits já somados no acumular.
+            acc.copy(
+                areaPeito = TamanhoLogica.medianaPositiva(peitos),
+                areaBunda = TamanhoLogica.medianaPositiva(bundas),
+                areaBuceta = TamanhoLogica.medianaPositiva(bucetas),
+            )
         } catch (e: Throwable) {
             Log.w(TAG, "skip $uri", e); acc
         } finally { runCatching { mmr.release() } }

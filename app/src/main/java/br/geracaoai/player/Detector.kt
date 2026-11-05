@@ -214,17 +214,33 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
                 val (fbSc, fbAr) = sc(TamanhoLogica.FEMALE_BREAST_EXPOSED)
                 val (fgSc, fgAr) = sc(TamanhoLogica.FEMALE_GENITALIA_EXPOSED)
                 val (buSc, buAr) = sc(TamanhoLogica.BUTTOCKS_EXPOSED)
+                val (ffSc, ffAr) = sc(TamanhoLogica.FACE_FEMALE)
+                val brCov = sc(TamanhoLogica.FEMALE_BREAST_COVERED).first
+                val buCov = sc(TamanhoLogica.BUTTOCKS_COVERED).first
+                val geCov = sc(TamanhoLogica.FEMALE_GENITALIA_COVERED).first
+                val faceAr = if (ffSc >= limiar) ffAr else 0f
+                // Só *_EXPOSED; métrica relativa ao rosto quando disponível.
+                val ap = if (fbSc >= limiar) TamanhoLogica.metricaRelativa(fbAr, faceAr) else 0f
+                val ab = if (buSc >= limiar) TamanhoLogica.metricaRelativa(buAr, faceAr) else 0f
+                val abu = if (fgSc >= limiar) TamanhoLogica.metricaRelativa(fgAr, faceAr) else 0f
                 return TamanhoLogica.Evidencia(
-                    faceFemale = sc(TamanhoLogica.FACE_FEMALE).first,
+                    faceFemale = ffSc,
                     faceMale = sc(TamanhoLogica.FACE_MALE).first,
                     maleGen = sc(TamanhoLogica.MALE_GENITALIA_EXPOSED).first,
                     maleBreast = sc(TamanhoLogica.MALE_BREAST_EXPOSED).first,
                     femaleBreast = fbSc,
                     femaleGen = fgSc,
                     buttocks = buSc,
-                    areaPeito = if (fbSc >= limiar) fbAr else 0f,
-                    areaBunda = if (buSc >= limiar) buAr else 0f,
-                    areaBuceta = if (fgSc >= limiar) fgAr else 0f,
+                    areaPeito = ap,
+                    areaBunda = ab,
+                    areaBuceta = abu,
+                    faceArea = faceAr,
+                    breastCovered = brCov,
+                    buttocksCovered = buCov,
+                    genCovered = geCov,
+                    hitsPeito = if (ap > 0f) 1 else 0,
+                    hitsBunda = if (ab > 0f) 1 else 0,
+                    hitsBuceta = if (abu > 0f) 1 else 0,
                 )
             }
         }

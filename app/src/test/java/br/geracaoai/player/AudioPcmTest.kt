@@ -46,10 +46,4 @@ class AudioPcmTest {
         assertTrue(AudioPcm.rms(FloatArray(100) { 0.1f }) > 0.09f)
     }
 
-    @Test fun tradutorLexicoBasico() {
-        val pt = TradutorLexico.traduzir("I love you")
-        assertTrue(pt.lowercase().contains("eu"))
-        assertTrue(pt.lowercase().contains("amor") || pt.lowercase().contains("love"))
-        assertTrue(pt.lowercase().contains("você") || pt.lowercase().contains("you"))
-    }
 }

@@ -9,12 +9,6 @@
 -keep class org.tensorflow.** { *; }
 -dontwarn org.tensorflow.**
 
-# sherpa-onnx (Whisper legendas)
--keep class com.k2fsa.** { *; }
--keep class com.k2fsa.sherpa.onnx.** { *; }
--keepclassmembers class com.k2fsa.** { *; }
--dontwarn com.k2fsa.**
-
 # Keep all native methods (JNI)
 -keepclasseswithmembernames,includedescriptorclasses class * {
     native <methods>;

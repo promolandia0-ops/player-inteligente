@@ -32,9 +32,3 @@ class TamanhoPastasTest {
     }
 }
 
-class MelhorarProgressoLogicTest {
-    @Test fun fracBounds() {
-        assertTrue(0.37f in 0f..1f)
-        assertTrue(1f >= 0.999f)
-    }
-}
