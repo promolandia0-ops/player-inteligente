@@ -66,4 +66,12 @@ class FeatureAuditTest {
         assertEquals(a, b)
         assertEquals(a, VideosMedia.chaveEstavel(b))
     }
+
+    @Test fun porTamanhoRemovido() {
+        // API de pastas Por tamanho não existe mais
+        assertFalse(TamanhoLogica::class.java.declaredClasses.any { it.simpleName == "Alvo" })
+        assertTrue(NavAbas.pastaIdRemovido("__peituda"))
+        assertTrue(NavAbas.pastaIdRemovido("__bucetinha"))
+    }
+
 }

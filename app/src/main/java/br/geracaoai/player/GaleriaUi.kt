@@ -1,12 +1,10 @@
 package br.geracaoai.player
 
 import android.Manifest
-import android.content.ContentUris
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.provider.MediaStore
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,8 +12,6 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -41,8 +37,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -59,6 +53,29 @@ enum class AbaGaleria(val rotulo: String, val icone: ImageVector) {
     ALBUNS("Álbuns", Icons.Default.PhotoAlbum),
     INTELIGENTE("Inteligente", Icons.Default.AutoAwesome),
     AJUSTES("Ajustes", Icons.Default.Tune),
+}
+
+/** Pilha de 1 nível entre abas: Back volta à anterior; o próximo Back cai em Álbuns. */
+object NavAbas {
+    val HOME = AbaGaleria.ALBUNS.name
+    data class Snap(val aba: String, val anterior: String)
+
+    fun aoTrocar(atual: String, nova: String, anterior: String): Snap {
+        if (nova == atual) return Snap(atual, anterior)
+        return Snap(nova, atual)
+    }
+
+    fun aoVoltar(atual: String, anterior: String): Snap {
+        if (atual == HOME) return Snap(HOME, HOME)
+        val dest = if (anterior.isBlank() || anterior == atual || !ehAba(anterior)) HOME else anterior
+        return Snap(dest, HOME)
+    }
+
+    fun ehAba(nome: String): Boolean = runCatching { AbaGaleria.valueOf(nome) }.isSuccess
+
+    /** Ids antigos de Por tamanho (v1.3.8) — ignorar no restore. */
+    fun pastaIdRemovido(id: String): Boolean =
+        id.startsWith("__peit") || id.startsWith("__rab") || id.startsWith("__bucet")
 }
 
 @OptIn(ExperimentalSharedTransitionApi::class, ExperimentalMaterial3Api::class)
@@ -203,8 +220,7 @@ fun Biblioteca(
     }
     val pastaSel = remember(pastaId, pastas, albumsVirtuais) {
         pastaId?.let { id ->
-            // Ignora ids antigos de Por tamanho (v1.3.8) salvos no estado.
-            if (id.startsWith("__peit") || id.startsWith("__rab") || id.startsWith("__bucet")) null
+            if (NavAbas.pastaIdRemovido(id)) null
             else pastas.find { it.id == id } ?: albumsVirtuais.find { it.id == id }
         }
     }
@@ -223,7 +239,9 @@ fun Biblioteca(
     // Dentro de uma aba (sem pasta): volta à aba anterior, não sai do app.
     BackHandler(enabled = ativa && pastaSel == null && abaAtual != AbaGaleria.ALBUNS) {
         guardarScrolls()
-        aba = abaAnterior
+        val s = NavAbas.aoVoltar(aba, abaAnterior)
+        aba = s.aba
+        abaAnterior = s.anterior
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -292,8 +310,9 @@ fun Biblioteca(
                 aba = abaAtual,
                 onAba = { nova ->
                     guardarScrolls()
-                    if (nova.name != aba) abaAnterior = aba
-                    aba = nova.name
+                    val s = NavAbas.aoTrocar(aba, nova.name, abaAnterior)
+                    abaAnterior = s.anterior
+                    aba = s.aba
                     if (nova == AbaGaleria.VIDEOS) {
                         ordem = OrdemPrefs.get(ctx, "__videos", Ordenacao.MAIS_NOVOS).name
                     }
