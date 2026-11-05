@@ -52,7 +52,7 @@ class Prefs(ctx: Context) {
     var limiar: Float get() = p.getFloat("limiar", 0.45f); set(v) = p.edit().putFloat("limiar", v).apply()
     var offsetS: Int get() = p.getInt("offset", 3); set(v) = p.edit().putInt("offset", v).apply()
     var fps: Int get() = p.getInt("fps", 2); set(v) = p.edit().putInt("fps", v).apply()
-    var acelerador: Boolean get() = p.getBoolean("nnapi", true); set(v) = p.edit().putBoolean("nnapi", v).apply()
+    var acelerador: Boolean get() = p.getBoolean("nnapi2", false); set(v) = p.edit().putBoolean("nnapi2", v).apply()
     var cats: Set<Categoria>
         get() = p.getStringSet("cats", Categoria.entries.map { it.name }.toSet())!!.mapNotNull { runCatching { Categoria.valueOf(it) }.getOrNull() }.toSet()
         set(v) = p.edit().putStringSet("cats", v.map { it.name }.toSet()).apply()

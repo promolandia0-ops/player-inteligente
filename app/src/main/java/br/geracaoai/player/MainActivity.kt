@@ -582,7 +582,24 @@ fun Ajustes(voltar: () -> Unit) {
         Cartao { Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { Text("Acelerador (NNAPI / NPU)", style = MaterialTheme.typography.titleMedium)
                 Text("Se não for suportado, usa a CPU automaticamente.", style = MaterialTheme.typography.bodySmall, color = Cores.Suave) }
-            Switch(nn, { nn = it; p.acelerador = it }, colors = SwitchDefaults.colors(checkedTrackColor = Cores.Magenta, checkedThumbColor = Color.White)) } }
+            Switch(nn, { nn = it; p.acelerador = it; if (it) Detector.liberarNnapi(ctx) }, colors = SwitchDefaults.colors(checkedTrackColor = Cores.Magenta, checkedThumbColor = Color.White)) } }
+        var log by remember { mutableStateOf<String?>(null) }
+        BotaoVidro("Ver último erro", icone = { Icon(Icons.Default.BugReport, null, tint = Cores.Texto) }) { log = App.ultimoErro(ctx) }
+        log?.let { txt ->
+            AlertDialog(onDismissRequest = { log = null },
+                title = { Text("Último erro") },
+                text = { Text(txt, style = MaterialTheme.typography.bodySmall, modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) },
+                confirmButton = { TextButton({
+                    val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("erro", txt))
+                    android.widget.Toast.makeText(ctx, "Copiado", android.widget.Toast.LENGTH_SHORT).show() }) { Text("Copiar") } },
+                dismissButton = { TextButton({
+                    runCatching { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, txt), "Enviar erro").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                }) { Text("Compartilhar") } })
+        }
+        BotaoVidro("Reanalisar galeria", icone = { Icon(Icons.Default.Refresh, null, tint = Cores.Texto) }) {
+            runCatching { GaleriaDb(ctx).limpar(); OrganizarWorker.iniciar(ctx) }
+            android.widget.Toast.makeText(ctx, "Reclassificando a galeria do zero…", android.widget.Toast.LENGTH_SHORT).show() }
         BotaoVidro("Apagar análises salvas", icone = { Icon(Icons.Default.DeleteSweep, null, tint = Cores.Texto) }) {
             Cache.limpar(ctx); android.widget.Toast.makeText(ctx, "Análises apagadas", android.widget.Toast.LENGTH_SHORT).show() }
         Text("100% offline: o app não tem permissão de Internet.\nModelo: NudeNet 320n (detector por parte do corpo) via ONNX Runtime Mobile.",
@@ -631,6 +648,12 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     val zoomAnim by animateFloatAsState(zoom, spring(stiffness = 900f), label = "z")
     val panAnim by animateOffsetAsState(pan, spring(stiffness = 900f), label = "pn")
 
+    // Galeria nunca compete com o player: cede ao abrir, retoma ao sair.
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { Exclusao.playerAberto(ctx); runCatching { if (OrgPrefs(ctx).ativo) OrganizarScanService.yieldToAnalise(ctx) } }
+        while (true) { delay(4000); withContext(Dispatchers.IO) { Exclusao.playerAberto(ctx) } }
+    }
+    DisposableEffect(Unit) { onDispose { Exclusao.playerFechado(ctx); Exclusao.retomarGaleriaSePreciso(ctx) } }
     DisposableEffect(video.uri) {
         // player sempre imersivo
         act.telaCheia(true, paisagem = false)
@@ -652,29 +675,54 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         hud = "Volume ${(nivelVol * 100).toInt()}%" + if (nivelVol > 1f) "  (+%.1f dB)".format(Ganho.db(nivelVol)) else ""
     }
 
-    val infos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(AnaliseWorker.NOME).collectAsState(initial = emptyList())
-    val info = infos.firstOrNull()
-    val rodando = info?.state == WorkInfo.State.RUNNING || info?.state == WorkInfo.State.ENQUEUED
-    val uriInfo = info?.progress?.getString("uri") ?: info?.outputData?.getString("uri")
-    val desteVideo = uriInfo == video.uri.toString() || (rodando && uriInfo == null)
-    val prog = info?.progress?.getFloat("p", 0f) ?: 0f
-    LaunchedEffect((prog * 20).toInt(), info?.state) {
-        if (desteVideo && (rodando || info?.state == WorkInfo.State.SUCCEEDED || info?.state == WorkInfo.State.CANCELLED)) {
-            val novo = withContext(Dispatchers.IO) { Cache.carregar(ctx, chave) }
-            if (novo != null) analise = novo
-            if (info?.state == WorkInfo.State.SUCCEEDED) hap.performHapticFeedback(HapticFeedbackType.LongPress)
+    // Análise roda no processo :analise; a UI só lê o estado (arquivo) e o cache parcial.
+    var st by remember { mutableStateOf<AnaliseStatus?>(null) }
+    LaunchedEffect(video.uri) {
+        var ultimoP = -1f; var ultimoEstado: String? = null
+        while (true) {
+            val s = withContext(Dispatchers.IO) { AnaliseStatus.ler(ctx) }
+            val deste = s != null && s.uri == video.uri.toString()
+            var s2 = s
+            if (deste && s!!.rodando && System.currentTimeMillis() - s.hb > AnaliseService.HB_MORTO_MS) {
+                // processo :analise morreu (crash nativo/OOM) — o player continua vivo
+                s2 = s.copy(estado = AnaliseStatus.ERRO, erro = "o processo de análise caiu")
+                withContext(Dispatchers.IO) { AnaliseStatus.gravar(ctx, s2) }
+            }
+            if (deste && s2 != null) {
+                if (s2.p != ultimoP || s2.estado != ultimoEstado) {
+                    val novo = withContext(Dispatchers.IO) { runCatching { Cache.carregar(ctx, chave) }.getOrNull() }
+                    if (novo != null) analise = novo
+                }
+                if (ultimoEstado == AnaliseStatus.RODANDO && s2.estado == AnaliseStatus.OK) hap.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (ultimoEstado == AnaliseStatus.RODANDO && s2.estado == AnaliseStatus.ERRO) {
+                    android.widget.Toast.makeText(ctx, "Não deu para analisar: ${s2.erro ?: "erro"}. Veja Ajustes › Ver último erro.", android.widget.Toast.LENGTH_LONG).show()
+                }
+                ultimoP = s2.p; ultimoEstado = s2.estado
+            }
+            st = if (deste) s2 else null
+            delay(if (st?.rodando == true) 400 else 1200)
+        }
+    }
+    val rodando = st?.rodando == true
+    val desteVideo = st != null
+    val prog = st?.p ?: 0f
+    fun iniciarSeguro(start: Long) {
+        try { AnaliseService.iniciar(ctx, video.uri, start); st = AnaliseStatus(video.uri.toString(), AnaliseStatus.RODANDO, 0f, "Preparando", null, System.currentTimeMillis()) }
+        catch (e: Throwable) {
+            App.gravarErro(ctx, "iniciar análise", e)
+            android.widget.Toast.makeText(ctx, "Não consegui iniciar a análise: ${e.message ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
         }
     }
 
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        AnaliseWorker.iniciar(ctx, video.uri, player.currentPosition.coerceAtLeast(0L))
+        iniciarSeguro(player.currentPosition.coerceAtLeast(0L))
     }
     fun buscar() {
         hap.performHapticFeedback(HapticFeedbackType.LongPress)
         val start = player.currentPosition.coerceAtLeast(0L)
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
-        else AnaliseWorker.iniciar(ctx, video.uri, start)
+        else iniciarSeguro(start)
     }
     fun pular(s: Segmento) { hap.performHapticFeedback(HapticFeedbackType.TextHandleMove); player.seekTo(Segmentador.alvoDoSalto(s, offsetMs)); player.play() }
     fun proxima() { Segmentador.proxima(segs, player.currentPosition, offsetMs)?.let { pular(it) } ?: run { hud = "Não há próxima cena" } }
@@ -781,7 +829,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                     val semResultados = segsTodas.isEmpty()
                     when {
                         rodando && desteVideo -> {
-                            Row(Modifier.toque { AnaliseWorker.cancelar(ctx) }
+                            Row(Modifier.toque { AnaliseService.cancelar(ctx); st = null }
                                 .clip(RoundedCornerShape(50)).background(Cores.GradienteH)
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically) {

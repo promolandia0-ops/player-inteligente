@@ -19,6 +19,12 @@
         android:exported="false"
         android:foregroundServiceType="dataSync|mediaProcessing"
         android:process=":scan"/>
+    <!-- Análise por vídeo isolada: crash nativo (NNAPI/codec) ou OOM aqui não fecha o player. -->
+    <service
+        android:name=".AnaliseService"
+        android:exported="false"
+        android:foregroundServiceType="dataSync|mediaProcessing"
+        android:process=":analise"/>
     <service android:name="androidx.work.impl.foreground.SystemForegroundService" android:foregroundServiceType="dataSync|mediaProcessing" tools:node="merge"/>
   </application>
 </manifest>

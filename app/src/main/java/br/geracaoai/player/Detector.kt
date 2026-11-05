@@ -9,12 +9,21 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.util.Log
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 /** NudeNet 320n (YOLOv8n, 18 classes) — UMA OrtSession reutilizada; tensors fechados em use{}. */
-class Detector(ctx: Context, usarAcelerador: Boolean) : AutoCloseable {
+class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
+    companion object {
+        /** NNAPI derrubou o processo antes (crash nativo) → desliga sozinho. */
+        fun nnapiBloqueado(ctx: Context) = File(ctx.filesDir, "nnapi_off").exists()
+        fun liberarNnapi(ctx: Context) { File(ctx.filesDir, "nnapi_off").delete(); File(ctx.filesDir, "nnapi_guard").delete() }
+    }
+    private val guard = File(ctx.filesDir, "nnapi_guard")
+    private val off = File(ctx.filesDir, "nnapi_off")
+    private var guardAtivo = false
     private val env = OrtEnvironment.getEnvironment()
     private val sessao: OrtSession
     private val opcoes: OrtSession.SessionOptions
@@ -26,6 +35,8 @@ class Detector(ctx: Context, usarAcelerador: Boolean) : AutoCloseable {
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     init {
+        if (guard.exists()) { runCatching { off.writeText("crash nativo com NNAPI"); guard.delete() } }
+        val usarAcelerador = usarAcelerador0 && !off.exists()
         val modelo = ctx.assets.open("nudenet_320n.onnx").use { it.readBytes() }
         fun opts(nnapi: Boolean) = OrtSession.SessionOptions().apply {
             setSymbolicDimensionValue("batch", 1)
@@ -39,6 +50,7 @@ class Detector(ctx: Context, usarAcelerador: Boolean) : AutoCloseable {
         var o: OrtSession.SessionOptions? = null
         if (usarAcelerador) {
             o = opts(true)
+            runCatching { guard.writeText("1") }; guardAtivo = true
             s = runCatching { env.createSession(modelo, o).also { backend = "NNAPI" } }
                 .onFailure { Log.w("Detector", "NNAPI indisponível", it); runCatching { o?.close() }; o = null }
                 .getOrNull()
@@ -53,6 +65,7 @@ class Detector(ctx: Context, usarAcelerador: Boolean) : AutoCloseable {
             o = OrtSession.SessionOptions()
             s = env.createSession(modelo, o).also { backend = "CPU" }
         }
+        if (backend != "NNAPI" && guardAtivo) { guard.delete(); guardAtivo = false }
         sessao = s!!
         opcoes = o!!
     }
@@ -64,6 +77,7 @@ class Detector(ctx: Context, usarAcelerador: Boolean) : AutoCloseable {
                 val out = (r[0] as OnnxTensor)
                 val a = out.info.shape[2].toInt()
                 val fb = out.floatBuffer
+                okRodou()
                 return Categoria.entries.associateWith { cat ->
                     val base = (4 + cat.classIndex) * a; var m = 0f
                     for (i in 0 until a) { val v = fb.get(base + i); if (v > m) m = v }
@@ -85,6 +99,7 @@ class Detector(ctx: Context, usarAcelerador: Boolean) : AutoCloseable {
                     for (i in 0 until a) { val v = fb.get(base + i); if (v > m) m = v }
                     return m
                 }
+                okRodou()
                 val ui = Categoria.entries.associateWith { maxClasse(it.classIndex) }
                 val cats = ui.filter { it.value >= limiar }.keys
                 val putaria = OrganizarWorker.CLASSES_EXPOSTAS.any { maxClasse(it) >= limiar }
@@ -92,6 +107,9 @@ class Detector(ctx: Context, usarAcelerador: Boolean) : AutoCloseable {
             }
         }
     }
+
+    /** Primeira inferência NNAPI ok → remove a sentinela. */
+    private fun okRodou() { if (guardAtivo) { guard.delete(); guardAtivo = false } }
 
     private fun preparar(frame: Bitmap) {
         val c = Canvas(tela); c.drawColor(Color.BLACK)
@@ -114,6 +132,7 @@ class Detector(ctx: Context, usarAcelerador: Boolean) : AutoCloseable {
     override fun close() {
         runCatching { sessao.close() }
         runCatching { opcoes.close() }
+        okRodou()
         if (!tela.isRecycled) tela.recycle()
     }
 }

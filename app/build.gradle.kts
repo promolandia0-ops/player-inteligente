@@ -5,8 +5,8 @@ android {
   namespace = "br.geracaoai.player"
   compileSdk = 35
   defaultConfig {
-    applicationId = "br.geracaoai.player"; minSdk = 29; targetSdk = 35; versionCode = 3; versionName = "1.1.1"
-    ndk { abiFilters += listOf("arm64-v8a") }
+    applicationId = "br.geracaoai.player"; minSdk = 29; targetSdk = 35; versionCode = 4; versionName = "1.1.2"
+    ndk { abiFilters += (project.findProperty("abis") as String? ?: "arm64-v8a").split(",") }
   }
   signingConfigs { create("release") { if (ks.isNotEmpty()) { storeFile = file(ks["storeFile"] as String); storePassword = ks["storePassword"] as String; keyAlias = ks["keyAlias"] as String; keyPassword = ks["keyPassword"] as String } } }
   buildTypes { release { isMinifyEnabled = true; isShrinkResources = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"); signingConfig = signingConfigs.getByName("release") } }

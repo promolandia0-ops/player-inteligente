@@ -24,8 +24,10 @@ class OrganizarWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
     companion object {
         const val NOME = "organizar"
         const val CANAL = "organizar"
-        const val LIMIAR = 0.40f
-        const val FRAMES = 6
+        const val LIMIAR = 0.55f
+        /** Quadros com parte EXPOSTA necessários para marcar Putaria. */
+        const val CONFIRMACOES = 2
+        const val FRAMES = 8
         val CLASSES_EXPOSTAS = intArrayOf(2, 3, 4, 6, 14)
         private const val TAG = "Organizar"
         private const val PAUSE_FILE = "org_paused.flag"

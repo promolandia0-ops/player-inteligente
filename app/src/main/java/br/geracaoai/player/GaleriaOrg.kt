@@ -92,6 +92,8 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
     }
 
     fun limpar() { writableDatabase.delete("org", null, null) }
+    /** Força reclassificar só os marcados como Putaria (regras mais rígidas na v1.1.2). */
+    fun limparNude() { writableDatabase.delete("org", "classif=?", arrayOf("NUDE")) }
 
     private fun ler(c: android.database.Cursor) = ResultadoOrg(
         c.getString(0),

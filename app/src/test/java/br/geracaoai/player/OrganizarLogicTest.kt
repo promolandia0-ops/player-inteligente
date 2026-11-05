@@ -94,6 +94,8 @@ class OrganizarLogicTest {
 
     @Test fun classesExpostasSaoAsCorretas() {
         assertArrayEquals(intArrayOf(2, 3, 4, 6, 14), OrganizarWorker.CLASSES_EXPOSTAS)
-        assertEquals(6, OrganizarWorker.FRAMES)
+        assertEquals(8, OrganizarWorker.FRAMES)
+        assertTrue(OrganizarWorker.LIMIAR >= 0.5f)
+        assertEquals(2, OrganizarWorker.CONFIRMACOES)
     }
 }

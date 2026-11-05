@@ -79,3 +79,37 @@ object Segmentador {
     fun anterior(segs: List<Segmento>, posMs: Long, offsetMs: Long): Segmento? =
         segs.lastOrNull { alvoDoSalto(it, offsetMs) < posMs - 1500 }
 }
+
+/**
+ * Exclusão entre galeria (:scan) e player/análise por vídeo (:analise). Arquivos com batida
+ * (timestamp) funcionam entre processos e expiram sozinhos se um processo morrer.
+ */
+object Exclusao {
+    private const val VALIDADE_MS = 12_000L
+    private fun f(ctx: android.content.Context, n: String) = java.io.File(ctx.filesDir, n)
+    private fun bater(ctx: android.content.Context, n: String) = runCatching { f(ctx, n).writeText(System.currentTimeMillis().toString()) }
+    private fun vivo(ctx: android.content.Context, n: String) = runCatching {
+        System.currentTimeMillis() - f(ctx, n).readText().trim().toLong() < VALIDADE_MS }.getOrDefault(false)
+
+    fun playerAberto(ctx: android.content.Context) = bater(ctx, "lock_player")
+    fun playerFechado(ctx: android.content.Context) = runCatching { f(ctx, "lock_player").delete() }
+    fun playerEstaAberto(ctx: android.content.Context) = vivo(ctx, "lock_player")
+
+    fun scanBatida(ctx: android.content.Context) = bater(ctx, "lock_scan")
+    fun scanFim(ctx: android.content.Context) = runCatching { f(ctx, "lock_scan").delete() }
+    fun scanRodando(ctx: android.content.Context) = vivo(ctx, "lock_scan")
+
+    /** Espera a galeria liberar decoder/modelo (no máx. [maxMs]). */
+    fun esperarScanParar(ctx: android.content.Context, maxMs: Long = 20_000L): Boolean {
+        val fim = System.currentTimeMillis() + maxMs
+        while (scanRodando(ctx) && System.currentTimeMillis() < fim) Thread.sleep(250)
+        return !scanRodando(ctx)
+    }
+
+    /** Retoma a galeria se o usuário não pausou e nada mais está usando o modelo. */
+    fun retomarGaleriaSePreciso(ctx: android.content.Context) = runCatching {
+        if (playerEstaAberto(ctx) || AnaliseService.rodando(ctx)) return@runCatching
+        val op = OrgPrefs(ctx)
+        if (op.ativo && !op.pausado) { OrganizarScanService.start(ctx, op.bucketId); OrganizarWorker.reagendar(ctx) }
+    }
+}

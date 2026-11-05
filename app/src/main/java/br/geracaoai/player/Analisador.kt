@@ -2,7 +2,10 @@ package br.geracaoai.player
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.ImageFormat
@@ -12,147 +15,220 @@ import android.media.*
 import android.net.Uri
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.IBinder
+import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.work.*
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.math.min
+
+/** Estado da análise por vídeo, trocado entre processos via arquivo (UI ↔ :analise). */
+data class AnaliseStatus(val uri: String, val estado: String, val p: Float, val txt: String, val erro: String?, val hb: Long) {
+    val rodando get() = estado == RODANDO
+    companion object {
+        const val RODANDO = "rodando"; const val OK = "ok"; const val ERRO = "erro"; const val CANCELADO = "cancelado"
+        private fun arq(ctx: Context) = File(ctx.filesDir, "analise_status.json")
+        fun gravar(ctx: Context, s: AnaliseStatus) = runCatching {
+            val f = arq(ctx); val tmp = File(f.path + ".tmp")
+            tmp.writeText(JSONObject().put("uri", s.uri).put("estado", s.estado).put("p", s.p.toDouble())
+                .put("txt", s.txt).put("erro", s.erro ?: "").put("hb", s.hb).toString())
+            tmp.renameTo(f)
+        }
+        fun ler(ctx: Context): AnaliseStatus? = runCatching {
+            val j = JSONObject(arq(ctx).readText())
+            AnaliseStatus(j.getString("uri"), j.getString("estado"), j.optDouble("p", 0.0).toFloat(), j.optString("txt"),
+                j.optString("erro").ifBlank { null }, j.optLong("hb"))
+        }.getOrNull()
+    }
+}
 
 /**
  * Análise em 2 passagens, a partir da posição de reprodução:
  *  1) grosso (~1 quadro / 2 s, keyframe) — marcas aparecem na hora
  *  2) refino ±2 s em torno dos hits, no fps das preferências
- * Decode e inferência em pipeline (produtor/consumidor). MediaCodec quando possível;
- * fallback MediaMetadataRetriever com OPTION_CLOSEST_SYNC / CLOSEST.
+ * Roda num Service em processo próprio `:analise`: crash nativo (NNAPI/codec) ou OOM aqui
+ * NÃO fecha o player. Uma análise por vez, uma única OrtSession, quadros de 320 px.
  */
-class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+class AnaliseService : Service() {
     companion object {
-        const val NOME = "analise"
         const val CANAL = "analise"
         const val GROSSO_MS = 2000L
         const val LIMIAR_GROSSO = 0.28f
+        const val ACTION_START = "br.geracaoai.player.ANALISE_START"
+        const val ACTION_CANCEL = "br.geracaoai.player.ANALISE_CANCEL"
         private const val TAG = "Analise"
+        private const val NOTIF = 42
+        /** Sem batida há mais que isso com estado "rodando" = processo morreu. */
+        const val HB_MORTO_MS = 25_000L
 
         fun iniciar(ctx: Context, uri: Uri, startMs: Long = 0L) {
-            // Prioridade: pede ao :scan para ceder (não é pausa do usuário).
+            val p = Prefs(ctx)
+            AnaliseStatus.gravar(ctx, AnaliseStatus(uri.toString(), AnaliseStatus.RODANDO, 0f, "Preparando", null, System.currentTimeMillis()))
+            // Nunca roda junto com a galeria: pede ao :scan para ceder.
             runCatching { OrganizarScanService.yieldToAnalise(ctx) }
-            val req = OneTimeWorkRequestBuilder<AnaliseWorker>()
-                .setInputData(workDataOf("uri" to uri.toString(), "startMs" to startMs))
-                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST).build()
-            WorkManager.getInstance(ctx).enqueueUniqueWork(NOME, ExistingWorkPolicy.REPLACE, req)
+            val i = Intent(ctx, AnaliseService::class.java).setAction(ACTION_START)
+                .putExtra("uri", uri.toString()).putExtra("startMs", startMs)
+                .putExtra("fps", p.fps).putExtra("nnapi", p.acelerador)
+            ContextCompat.startForegroundService(ctx, i)
         }
-        fun cancelar(ctx: Context) = WorkManager.getInstance(ctx).cancelUniqueWork(NOME)
+        fun cancelar(ctx: Context) {
+            runCatching { ctx.startService(Intent(ctx, AnaliseService::class.java).setAction(ACTION_CANCEL)) }
+            AnaliseStatus.ler(ctx)?.let { if (it.rodando) AnaliseStatus.gravar(ctx, it.copy(estado = AnaliseStatus.CANCELADO, hb = System.currentTimeMillis())) }
+        }
+        fun rodando(ctx: Context): Boolean = AnaliseStatus.ler(ctx)?.let { it.rodando && System.currentTimeMillis() - it.hb < HB_MORTO_MS } ?: false
     }
 
-    private fun notif(p: Int, texto: String) = NotificationCompat.Builder(applicationContext, CANAL)
-        .setSmallIcon(R.drawable.ic_notif).setContentTitle("Buscando cenas…").setContentText(texto)
-        .setProgress(100, p, false).setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
-        .addAction(0, "Cancelar", WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)).build()
+    @Volatile private var isStopped = false
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var job: Job? = null
 
-    private fun fg(p: Int, t: String) = ForegroundInfo(42, notif(p, t), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-    override suspend fun getForegroundInfo() = fg(0, "Preparando")
+    override fun onBind(intent: Intent?): IBinder? = null
 
-    override suspend fun doWork(): Result = withContext(Dispatchers.Default) {
-        val ctx = applicationContext
-        val nm = ctx.getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel(CANAL, "Análise de vídeo", NotificationManager.IMPORTANCE_LOW))
-        runCatching { setForeground(fg(0, "Preparando")) }
-        val uri = Uri.parse(inputData.getString("uri") ?: return@withContext Result.failure())
-        val startMs = inputData.getLong("startMs", 0L).coerceAtLeast(0L)
-        val prefs = Prefs(ctx)
-        val finoMs = 1000L / prefs.fps.coerceIn(1, 4)
-        val chave = Cache.chave(ctx, uri)
-        val t0 = System.currentTimeMillis()
+    private fun notif(p: Int, texto: String): android.app.Notification {
+        val cancel = PendingIntent.getService(this, 1, Intent(this, AnaliseService::class.java).setAction(ACTION_CANCEL),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return NotificationCompat.Builder(this, CANAL)
+            .setSmallIcon(R.drawable.ic_notif).setContentTitle("Buscando cenas…").setContentText(texto)
+            .setProgress(100, p, false).setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
+            .addAction(0, "Cancelar", cancel).build()
+    }
 
+    private fun subirForeground() {
         try {
-            val dur = duracao(ctx, uri) ?: return@withContext Result.failure()
-            val mapa = LinkedHashMap<Long, FloatArray>() // scores por Categoria.ordinal
-            fun slot(t: Long) = mapa.getOrPut(t) { FloatArray(Categoria.entries.size) }
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(NotificationChannel(CANAL, "Análise de vídeo", NotificationManager.IMPORTANCE_LOW))
+            val n = notif(0, "Preparando")
+            val tipo = if (android.os.Build.VERSION.SDK_INT >= 35) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
+                else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            try { startForeground(NOTIF, n, tipo) }
+            catch (e: Throwable) {
+                Log.w(TAG, "fgs tipo $tipo falhou", e)
+                startForeground(NOTIF, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            }
+        } catch (e: Throwable) { Log.e(TAG, "startForeground falhou (seguindo sem FGS)", e) }
+    }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        subirForeground()
+        when (intent?.action) {
+            ACTION_CANCEL -> {
+                isStopped = true; job?.cancel()
+                AnaliseStatus.ler(this)?.let { if (it.rodando) AnaliseStatus.gravar(this, it.copy(estado = AnaliseStatus.CANCELADO)) }
+                if (job == null || job?.isActive != true) stopSelf()
+            }
+            ACTION_START -> {
+                val uri = intent.getStringExtra("uri") ?: run { stopSelf(); return START_NOT_STICKY }
+                val startMs = intent.getLongExtra("startMs", 0L)
+                val fps = intent.getIntExtra("fps", 2)
+                val nnapi = intent.getBooleanExtra("nnapi", false)
+                val anterior = job
+                isStopped = true
+                job = scope.launch {
+                    anterior?.cancelAndJoin()
+                    isStopped = false
+                    rodar(Uri.parse(uri), startMs, fps, nnapi)
+                    if (job === coroutineContext[Job]) stopSelf()
+                }
+            }
+            else -> stopSelf()
+        }
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() { isStopped = true; scope.cancel(); super.onDestroy() }
+
+    private suspend fun rodar(uri: Uri, startMs0: Long, fps: Int, nnapi: Boolean) {
+        val ctx = applicationContext
+        val nm = getSystemService(NotificationManager::class.java)
+        val startMs = startMs0.coerceAtLeast(0L)
+        val finoMs = 1000L / fps.coerceIn(1, 4)
+        val t0 = System.currentTimeMillis()
+        fun status(estado: String, p: Float, txt: String, erro: String? = null) =
+            AnaliseStatus.gravar(ctx, AnaliseStatus(uri.toString(), estado, p, txt, erro, System.currentTimeMillis()))
+        Log.i(TAG, "início pid=${Process.myPid()} uri=$uri nnapi=$nnapi")
+        status(AnaliseStatus.RODANDO, 0f, "Preparando")
+        // Batida: mesmo com quadro lento a UI sabe que o processo está vivo.
+        val hb = scope.launch { while (isActive) { delay(5000); AnaliseStatus.ler(ctx)?.let { if (it.rodando && it.uri == uri.toString()) AnaliseStatus.gravar(ctx, it.copy(hb = System.currentTimeMillis())) } } }
+        try {
+            // Nunca dois modelos/decoders ao mesmo tempo: espera o :scan soltar tudo.
+            runCatching { OrganizarScanService.yieldToAnalise(ctx) }
+            if (!withContext(Dispatchers.IO) { Exclusao.esperarScanParar(ctx) }) Log.w(TAG, "scan não liberou a tempo; seguindo")
+            if (isStopped) return
+            val chave = Cache.chave(ctx, uri)
+            val dur = duracao(ctx, uri) ?: throw IllegalStateException("Não consegui ler a duração do vídeo")
+            val mapa = LinkedHashMap<Long, FloatArray>()
+            fun slot(t: Long) = mapa.getOrPut(t) { FloatArray(Categoria.entries.size) }
             fun persistir(parcial: Boolean) {
                 val tempos = mapa.keys.sorted().toLongArray()
-                val sc = Categoria.entries.associateWith { c ->
-                    FloatArray(tempos.size) { i -> mapa[tempos[i]]?.get(c.ordinal) ?: 0f }
-                }
+                val sc = Categoria.entries.associateWith { c -> FloatArray(tempos.size) { i -> mapa[tempos[i]]?.get(c.ordinal) ?: 0f } }
                 Cache.salvar(ctx, chave, Analise(dur, tempos, sc, parcial), finoMs)
             }
-
-            suspend fun progresso(fase: String, feitos: Int, total: Int, backend: String) {
-                val pf = feitos.toFloat() / max(1, total)
-                val p = (pf * 100).toInt().coerceIn(0, 99)
+            fun progresso(fase: String, feitos: Int, total: Int, backend: String) {
+                val pf = (feitos.toFloat() / max(1, total)).coerceIn(0f, 0.99f)
                 val el = (System.currentTimeMillis() - t0) / 1000
                 val rest = if (feitos > 0) el * (total - feitos) / feitos else 0
-                val txt = "$fase · $p% · $backend · ~${rest}s"
-                setProgress(workDataOf("p" to pf.coerceIn(0f, 1f), "uri" to uri.toString(), "txt" to txt))
-                nm.notify(42, notif(p, txt))
+                val txt = "$fase · ${(pf * 100).toInt()}% · $backend · ~${rest}s"
+                status(AnaliseStatus.RODANDO, pf, txt)
+                runCatching { nm.notify(NOTIF, notif((pf * 100).toInt(), txt)) }
                 persistir(true)
             }
 
-            Detector(ctx, prefs.acelerador).use { det ->
+            Detector(ctx, nnapi).use { det ->
                 val grossos = temposAPartirDe(dur, GROSSO_MS, startMs)
-                val totalEst = grossos.size + grossos.size // refino estimado ≈ grosso
+                val totalEst = grossos.size * 2
                 val feitos = AtomicInteger(0)
-
-                // Passagem 1 — grosso
                 pipeline(ctx, uri, grossos, keyframe = true, det) { t, sc ->
-                    if (isStopped) return@pipeline false
-                    val s = slot(t)
-                    for (i in sc.indices) s[i] = max(s[i], sc[i])
+                    val s = slot(t); for (i in sc.indices) s[i] = max(s[i], sc[i])
                     val n = feitos.incrementAndGet()
                     if (n % 2 == 0 || n == grossos.size) progresso("Rápida", n, totalEst, det.backend)
                     !isStopped
                 }
-                if (isStopped) { persistir(true); return@withContext Result.failure() }
-
-                // Candidatos + janelas de refino
+                if (isStopped) { persistir(true); return }
                 val hits = grossos.filter { t -> slot(t).any { it >= LIMIAR_GROSSO } }
                 val refinados = LinkedHashSet<Long>()
                 for (h in hits) {
-                    var t = max(0L, h - GROSSO_MS)
-                    val fim = min(dur, h + GROSSO_MS)
-                    while (t <= fim) {
-                        if (t !in mapa) refinados.add(t)
-                        t += finoMs
-                    }
+                    var t = max(0L, h - GROSSO_MS); val fim = min(dur, h + GROSSO_MS)
+                    while (t <= fim) { if (t !in mapa) refinados.add(t); t += finoMs }
                 }
                 val listaRefino = refinados.sortedBy { ordemAPartirDe(it, startMs, dur) }
                 val total2 = feitos.get() + listaRefino.size
-
                 pipeline(ctx, uri, listaRefino, keyframe = false, det) { t, sc ->
-                    if (isStopped) return@pipeline false
-                    val s = slot(t)
-                    for (i in sc.indices) s[i] = max(s[i], sc[i])
+                    val s = slot(t); for (i in sc.indices) s[i] = max(s[i], sc[i])
                     val n = feitos.incrementAndGet()
                     if (n % 3 == 0 || n >= total2) progresso("Refino", n, max(total2, n), det.backend)
                     !isStopped
                 }
+                if (isStopped) { persistir(true); return }
             }
-
             persistir(false)
             val el = (System.currentTimeMillis() - t0) / 1000f
-            Log.i(TAG, "ok %.1fs frames=${mapa.size} dur=${dur}ms start=$startMs".format(el))
-            setProgress(workDataOf("p" to 1f, "uri" to uri.toString(), "txt" to "Pronto · %.1fs".format(el)))
-            retomarGaleriaSePreciso(ctx)
-            Result.success(workDataOf("uri" to uri.toString(), "secs" to el))
-        } catch (e: Exception) {
+            Log.i(TAG, "ok %.1fs frames=${mapa.size}".format(el))
+            status(AnaliseStatus.OK, 1f, "Pronto · %.1fs".format(el))
+        } catch (e: CancellationException) {
+            status(AnaliseStatus.CANCELADO, 0f, "Cancelado")
+        } catch (e: Throwable) {
             Log.e(TAG, "falhou", e)
+            App.gravarErro(ctx, "analise", e)
+            status(AnaliseStatus.ERRO, 0f, "Falhou", e.message ?: e.javaClass.simpleName)
+        } finally {
+            hb.cancel()
+            // :analise termina limpo; libera memória nativa do ORT.
+            if (job == null || job?.isCancelled == false) scope.launch { delay(500); if (job?.isActive != true) { stopSelf() } }
+            runCatching { nm.cancel(NOTIF) }
             retomarGaleriaSePreciso(ctx)
-            Result.failure(workDataOf("erro" to (e.message ?: e.toString())))
         }
     }
 
     private fun retomarGaleriaSePreciso(ctx: Context) {
-        runCatching {
-            val op = OrgPrefs(ctx)
-            if (op.ativo && !op.pausado) {
-                OrganizarScanService.start(ctx, op.bucketId)
-                OrganizarWorker.reagendar(ctx)
-            }
-        }
+        // Player aberto → a galeria volta só quando o usuário sair do player.
+        if (!Exclusao.playerEstaAberto(ctx)) Exclusao.retomarGaleriaSePreciso(ctx)
     }
 
     /** Produtor decodifica; consumidor pontua. Capacidade 2 = pipeline curto. */
@@ -165,35 +241,38 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         onScore: suspend (Long, FloatArray) -> Boolean,
     ) {
         if (tempos.isEmpty()) return
-        val ch = Channel<Pair<Long, Bitmap>>(2)
-        val prod = CoroutineScope(Dispatchers.IO).async {
-            try {
-                if (!decodificarMediaCodec(ctx, uri, tempos, keyframe) { t, bmp ->
-                        runBlocking { ch.send(t to bmp) }; !isStopped
-                    }) {
-                    // fallback MMR
-                    val mmr = MediaMetadataRetriever()
-                    try {
-                        mmr.setDataSource(ctx, uri)
-                        val opt = if (keyframe) MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                        else MediaMetadataRetriever.OPTION_CLOSEST
-                        for (t in tempos) {
-                            if (isStopped) break
-                            val bmp = mmr.getScaledFrameAtTime(t * 1000, opt, 320, 320) ?: continue
-                            ch.send(t to bmp)
-                        }
-                    } finally { runCatching { mmr.release() } }
-                }
-            } finally { ch.close() }
-        }
-        for ((t, bmp) in ch) {
+        // Estritamente sequencial: decodifica 1 quadro (≤320 px) → pontua → recicla → próximo.
+        var continuar = true
+        suspend fun um(t: Long, bmp: Bitmap): Boolean {
             try {
                 val mapa = det.pontuar(bmp)
                 val arr = FloatArray(Categoria.entries.size) { i -> mapa[Categoria.entries[i]] ?: 0f }
-                if (!onScore(t, arr)) break
-            } finally { bmp.recycle() }
+                continuar = onScore(t, arr) && !isStopped
+            } finally { if (!bmp.isRecycled) bmp.recycle() }
+            return continuar
         }
-        prod.await()
+        val feitosMc = HashSet<Long>()
+        val okMc = withContext(Dispatchers.IO) {
+            decodificarMediaCodec(ctx, uri, tempos, keyframe) { t, bmp ->
+                feitosMc.add(t); runBlocking { um(t, bmp) }
+            }
+        }
+        if (!continuar || isStopped) return
+        val faltam = if (okMc) tempos.filter { it !in feitosMc && !keyframe } else tempos
+        if (okMc && keyframe) return
+        if (faltam.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            val mmr = MediaMetadataRetriever()
+            try {
+                mmr.setDataSource(ctx, uri)
+                val opt = if (keyframe) MediaMetadataRetriever.OPTION_CLOSEST_SYNC else MediaMetadataRetriever.OPTION_CLOSEST
+                for (t in faltam) {
+                    if (isStopped || !continuar) break
+                    val bmp = try { mmr.getScaledFrameAtTime(t * 1000, opt, 320, 320) } catch (e: Throwable) { Log.w(TAG, "frame $t", e); null } ?: continue
+                    um(t, bmp)
+                }
+            } finally { runCatching { mmr.release() } }
+        }
     }
 
     /**
@@ -293,7 +372,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             reader.close(); thread.quitSafely()
             while (true) { fila.poll()?.close() ?: break }
             okFrames > 0
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.w(TAG, "MediaCodec path fail, using MMR", e)
             false
         } finally {
@@ -333,7 +412,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         yuv.compressToJpeg(Rect(0, 0, width, height), 70, baos)
         val bytes = baos.toByteArray()
         android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
         Log.w(TAG, "yuv", e); null
     }
 
