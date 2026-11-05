@@ -675,54 +675,38 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         hud = "Volume ${(nivelVol * 100).toInt()}%" + if (nivelVol > 1f) "  (+%.1f dB)".format(Ganho.db(nivelVol)) else ""
     }
 
-    // Análise roda no processo :analise; a UI só lê o estado (arquivo) e o cache parcial.
-    var st by remember { mutableStateOf<AnaliseStatus?>(null) }
-    LaunchedEffect(video.uri) {
-        var ultimoP = -1f; var ultimoEstado: String? = null
-        while (true) {
-            val s = withContext(Dispatchers.IO) { AnaliseStatus.ler(ctx) }
-            val deste = s != null && s.uri == video.uri.toString()
-            var s2 = s
-            if (deste && s!!.rodando && System.currentTimeMillis() - s.hb > AnaliseService.HB_MORTO_MS) {
-                // processo :analise morreu (crash nativo/OOM) — o player continua vivo
-                s2 = s.copy(estado = AnaliseStatus.ERRO, erro = "o processo de análise caiu")
-                withContext(Dispatchers.IO) { AnaliseStatus.gravar(ctx, s2) }
+    val infos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(AnaliseWorker.NOME).collectAsState(initial = emptyList())
+    val info = infos.firstOrNull()
+    val rodando = info?.state == WorkInfo.State.RUNNING || info?.state == WorkInfo.State.ENQUEUED
+    val uriInfo = info?.progress?.getString("uri") ?: info?.outputData?.getString("uri")
+    val desteVideo = uriInfo == video.uri.toString() || (rodando && uriInfo == null)
+    val prog = info?.progress?.getFloat("p", 0f) ?: 0f
+    LaunchedEffect((prog * 20).toInt(), info?.state) {
+        if (desteVideo && (rodando || info?.state == WorkInfo.State.SUCCEEDED || info?.state == WorkInfo.State.CANCELLED || info?.state == WorkInfo.State.FAILED)) {
+            val novo = withContext(Dispatchers.IO) { runCatching { Cache.carregar(ctx, chave) }.getOrNull() }
+            if (novo != null) analise = novo
+            if (info?.state == WorkInfo.State.SUCCEEDED) hap.performHapticFeedback(HapticFeedbackType.LongPress)
+            if (info?.state == WorkInfo.State.FAILED) {
+                val erro = info?.outputData?.getString("erro") ?: "erro"
+                android.widget.Toast.makeText(ctx, "Não deu para analisar: $erro. Veja Ajustes › Ver último erro.", android.widget.Toast.LENGTH_LONG).show()
             }
-            if (deste && s2 != null) {
-                if (s2.p != ultimoP || s2.estado != ultimoEstado) {
-                    val novo = withContext(Dispatchers.IO) { runCatching { Cache.carregar(ctx, chave) }.getOrNull() }
-                    if (novo != null) analise = novo
-                }
-                if (ultimoEstado == AnaliseStatus.RODANDO && s2.estado == AnaliseStatus.OK) hap.performHapticFeedback(HapticFeedbackType.LongPress)
-                if (ultimoEstado == AnaliseStatus.RODANDO && s2.estado == AnaliseStatus.ERRO) {
-                    android.widget.Toast.makeText(ctx, "Não deu para analisar: ${s2.erro ?: "erro"}. Veja Ajustes › Ver último erro.", android.widget.Toast.LENGTH_LONG).show()
-                }
-                ultimoP = s2.p; ultimoEstado = s2.estado
-            }
-            st = if (deste) s2 else null
-            delay(if (st?.rodando == true) 400 else 1200)
-        }
-    }
-    val rodando = st?.rodando == true
-    val desteVideo = st != null
-    val prog = st?.p ?: 0f
-    fun iniciarSeguro(start: Long) {
-        try { AnaliseService.iniciar(ctx, video.uri, start); st = AnaliseStatus(video.uri.toString(), AnaliseStatus.RODANDO, 0f, "Preparando", null, System.currentTimeMillis()) }
-        catch (e: Throwable) {
-            App.gravarErro(ctx, "iniciar análise", e)
-            android.widget.Toast.makeText(ctx, "Não consegui iniciar a análise: ${e.message ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
         }
     }
 
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        iniciarSeguro(player.currentPosition.coerceAtLeast(0L))
+        AnaliseWorker.iniciar(ctx, video.uri, player.currentPosition.coerceAtLeast(0L))
     }
     fun buscar() {
         hap.performHapticFeedback(HapticFeedbackType.LongPress)
         val start = player.currentPosition.coerceAtLeast(0L)
-        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-            notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
-        else iniciarSeguro(start)
+        try {
+            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+            else AnaliseWorker.iniciar(ctx, video.uri, start)
+        } catch (e: Throwable) {
+            App.gravarErro(ctx, "iniciar análise", e)
+            android.widget.Toast.makeText(ctx, "Não consegui iniciar: ${e.message ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
+        }
     }
     fun pular(s: Segmento) { hap.performHapticFeedback(HapticFeedbackType.TextHandleMove); player.seekTo(Segmentador.alvoDoSalto(s, offsetMs)); player.play() }
     fun proxima() { Segmentador.proxima(segs, player.currentPosition, offsetMs)?.let { pular(it) } ?: run { hud = "Não há próxima cena" } }
@@ -829,7 +813,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                     val semResultados = segsTodas.isEmpty()
                     when {
                         rodando && desteVideo -> {
-                            Row(Modifier.toque { AnaliseService.cancelar(ctx); st = null }
+                            Row(Modifier.toque { AnaliseWorker.cancelar(ctx) }
                                 .clip(RoundedCornerShape(50)).background(Cores.GradienteH)
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically) {

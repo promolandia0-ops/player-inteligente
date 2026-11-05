@@ -17,13 +17,45 @@ import java.nio.FloatBuffer
 /** NudeNet 320n (YOLOv8n, 18 classes) — UMA OrtSession reutilizada; tensors fechados em use{}. */
 class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
     companion object {
-        /** NNAPI derrubou o processo antes (crash nativo) → desliga sozinho. */
+        const val ASSET = "nudenet_320n.onnx"
+        private const val TAG = "Detector"
+
+        /** NNAPI derrubou o processo antes → fica desligado até o usuário religar o acelerador. */
         fun nnapiBloqueado(ctx: Context) = File(ctx.filesDir, "nnapi_off").exists()
-        fun liberarNnapi(ctx: Context) { File(ctx.filesDir, "nnapi_off").delete(); File(ctx.filesDir, "nnapi_guard").delete() }
+        fun liberarNnapi(ctx: Context) {
+            File(ctx.filesDir, "nnapi_off").delete()
+            File(ctx.filesDir, "nnapi_guard").delete()
+        }
+
+        /** Carrega o modelo do asset (sem compressão) ou da cópia em filesDir. Erro claro se faltar. */
+        fun carregarModelo(ctx: Context): ByteArray {
+            // Preferência: cópia já extraída (evita reabrir o APK a cada processo).
+            val copia = File(ctx.filesDir, ASSET)
+            if (copia.exists() && copia.length() > 1_000_000L) {
+                return copia.readBytes()
+            }
+            val bytes = try {
+                ctx.assets.open(ASSET).use { it.readBytes() }
+            } catch (e: Throwable) {
+                throw IllegalStateException(
+                    "Modelo $ASSET não encontrado no app (assets). Reinstale o APK. Detalhe: ${e.message}", e
+                )
+            }
+            if (bytes.size < 1_000_000) {
+                throw IllegalStateException(
+                    "Modelo $ASSET parece corrompido (${bytes.size} bytes). Reinstale o APK."
+                )
+            }
+            runCatching {
+                val tmp = File(ctx.filesDir, "$ASSET.tmp")
+                tmp.writeBytes(bytes)
+                if (!tmp.renameTo(copia)) { copia.writeBytes(bytes); tmp.delete() }
+            }
+            Log.i(TAG, "modelo ok ${bytes.size} bytes (asset→filesDir)")
+            return bytes
+        }
     }
-    private val guard = File(ctx.filesDir, "nnapi_guard")
-    private val off = File(ctx.filesDir, "nnapi_off")
-    private var guardAtivo = false
+
     private val env = OrtEnvironment.getEnvironment()
     private val sessao: OrtSession
     private val opcoes: OrtSession.SessionOptions
@@ -33,17 +65,22 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
     private val px = IntArray(S * S)
     private val tela = Bitmap.createBitmap(S, S, Bitmap.Config.ARGB_8888)
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val guard = File(ctx.filesDir, "nnapi_guard")
+    private val off = File(ctx.filesDir, "nnapi_off")
+    private var guardAtivo = false
 
     init {
-        if (guard.exists()) { runCatching { off.writeText("crash nativo com NNAPI"); guard.delete() } }
+        if (guard.exists()) {
+            runCatching { off.writeText("crash nativo com NNAPI"); guard.delete() }
+        }
         val usarAcelerador = usarAcelerador0 && !off.exists()
-        val modelo = ctx.assets.open("nudenet_320n.onnx").use { it.readBytes() }
+        val modelo = carregarModelo(ctx)
         fun opts(nnapi: Boolean) = OrtSession.SessionOptions().apply {
             setSymbolicDimensionValue("batch", 1)
             setSymbolicDimensionValue("height", S.toLong())
             setSymbolicDimensionValue("width", S.toLong())
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            setIntraOpNumThreads(2) // menos pressão de memória na galeria
+            setIntraOpNumThreads(2)
             if (nnapi) addNnapi() else runCatching { addXnnpack(mapOf("intra_op_num_threads" to "2")) }
         }
         var s: OrtSession? = null
@@ -52,7 +89,7 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
             o = opts(true)
             runCatching { guard.writeText("1") }; guardAtivo = true
             s = runCatching { env.createSession(modelo, o).also { backend = "NNAPI" } }
-                .onFailure { Log.w("Detector", "NNAPI indisponível", it); runCatching { o?.close() }; o = null }
+                .onFailure { Log.w(TAG, "NNAPI indisponível", it); runCatching { o?.close() }; o = null }
                 .getOrNull()
         }
         if (s == null) {
@@ -63,11 +100,17 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
         }
         if (s == null) {
             o = OrtSession.SessionOptions()
-            s = env.createSession(modelo, o).also { backend = "CPU" }
+            s = try {
+                env.createSession(modelo, o).also { backend = "CPU" }
+            } catch (e: Throwable) {
+                runCatching { o.close() }
+                throw IllegalStateException("Falha ao abrir o modelo ONNX: ${e.message}", e)
+            }
         }
         if (backend != "NNAPI" && guardAtivo) { guard.delete(); guardAtivo = false }
-        sessao = s!!
+        sessao = s
         opcoes = o!!
+        Log.i(TAG, "sessão pronta backend=$backend")
     }
 
     fun pontuar(frame: Bitmap): Map<Categoria, Float> {
@@ -108,7 +151,6 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
         }
     }
 
-    /** Primeira inferência NNAPI ok → remove a sentinela. */
     private fun okRodou() { if (guardAtivo) { guard.delete(); guardAtivo = false } }
 
     private fun preparar(frame: Bitmap) {

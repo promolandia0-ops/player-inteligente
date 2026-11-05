@@ -99,16 +99,15 @@ object Exclusao {
     fun scanFim(ctx: android.content.Context) = runCatching { f(ctx, "lock_scan").delete() }
     fun scanRodando(ctx: android.content.Context) = vivo(ctx, "lock_scan")
 
-    /** Espera a galeria liberar decoder/modelo (no máx. [maxMs]). */
-    fun esperarScanParar(ctx: android.content.Context, maxMs: Long = 20_000L): Boolean {
+    /** Espera a galeria liberar (default 3 s — nunca trava a análise). */
+    fun esperarScanParar(ctx: android.content.Context, maxMs: Long = 3_000L): Boolean {
         val fim = System.currentTimeMillis() + maxMs
-        while (scanRodando(ctx) && System.currentTimeMillis() < fim) Thread.sleep(250)
+        while (scanRodando(ctx) && System.currentTimeMillis() < fim) Thread.sleep(200)
         return !scanRodando(ctx)
     }
 
-    /** Retoma a galeria se o usuário não pausou e nada mais está usando o modelo. */
     fun retomarGaleriaSePreciso(ctx: android.content.Context) = runCatching {
-        if (playerEstaAberto(ctx) || AnaliseService.rodando(ctx)) return@runCatching
+        if (playerEstaAberto(ctx) || AnaliseWorker.rodando(ctx)) return@runCatching
         val op = OrgPrefs(ctx)
         if (op.ativo && !op.pausado) { OrganizarScanService.start(ctx, op.bucketId); OrganizarWorker.reagendar(ctx) }
     }

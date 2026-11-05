@@ -54,7 +54,8 @@ class OrganizarScanService : Service() {
         }
         /** Cede à análise por vídeo sem marcar pausa do usuário. */
         fun yieldToAnalise(ctx: Context) {
-            if (!Exclusao.scanRodando(ctx)) return
+            // Só acorda o :scan se a varredura estiver marcada ativa ou o heartbeat vivo.
+            if (!OrgPrefs(ctx).ativo && !Exclusao.scanRodando(ctx)) return
             runCatching {
                 ContextCompat.startForegroundService(
                     ctx, Intent(ctx, OrganizarScanService::class.java).setAction(ACTION_YIELD),
@@ -257,7 +258,7 @@ class OrganizarScanService : Service() {
         .setProgress(100, p, false).setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
         .build()
 
-    private fun analiseRodando(ctx: Context): Boolean = try { AnaliseService.rodando(ctx) } catch (_: Throwable) { false }
+    private fun analiseRodando(ctx: Context): Boolean = try { AnaliseWorker.rodando(ctx) } catch (_: Throwable) { false }
 
     private fun listarVideos(ctx: Context, bucketId: String?): List<Video> {
         val out = ArrayList<Video>()
