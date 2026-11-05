@@ -105,8 +105,16 @@ object LegendaEngine {
                 LegendaProgresso.set(ctx, uri.toString(), 0.02f)
                 val assetDir = copiarModelos(ctx)
                 val recognizer = criarRecognizer(assetDir)
-                val pcm = Gemido.decodificarPcm16k(ctx, uri) ?: run {
-                    onStatus("Sem áudio"); LegendaProgresso.clear(ctx, uri.toString()); return@submit
+                val pcm = AudioPcm.decodificarPcm16k(ctx, uri)
+                if (pcm == null || pcm.isEmpty()) {
+                    onStatus("Não li o áudio deste vídeo")
+                    LegendaProgresso.clear(ctx, uri.toString())
+                    return@submit
+                }
+                if (AudioPcm.rms(pcm) < 1e-5f) {
+                    onStatus("Áudio silencioso")
+                    LegendaProgresso.clear(ctx, uri.toString())
+                    return@submit
                 }
                 val cues = ArrayList<Cue>()
                 val chunk = 16_000 * 15 // 15s

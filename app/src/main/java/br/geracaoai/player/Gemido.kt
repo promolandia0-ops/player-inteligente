@@ -1,18 +1,11 @@
 package br.geracaoai.player
 
 import android.content.Context
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
 import android.net.Uri
 import android.util.Log
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.nio.channels.FileChannel
-import kotlin.math.ln
-import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
@@ -92,87 +85,8 @@ object Gemido {
         }
     }
 
-    /** PCM float mono -1..1 @ 16 kHz (pode ser longo — caller em background). */
-    fun decodificarPcm16k(ctx: Context, uri: Uri, maxSec: Int = 60 * 90): FloatArray? {
-        val ex = MediaExtractor()
-        return try {
-            ex.setDataSource(ctx, uri, null)
-            val track = (0 until ex.trackCount).firstOrNull {
-                ex.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-            } ?: return null
-            ex.selectTrack(track)
-            val format = ex.getTrackFormat(track)
-            val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
-            val srcSr = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            val ch = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
-            val codec = MediaCodec.createDecoderByType(mime)
-            codec.configure(format, null, null, 0)
-            codec.start()
-            val out = ArrayList<Float>(SR * 60)
-            val info = MediaCodec.BufferInfo()
-            var inDone = false
-            val maxSamples = SR * maxSec
-            while (out.size < maxSamples) {
-                if (!inDone) {
-                    val ix = codec.dequeueInputBuffer(5_000)
-                    if (ix >= 0) {
-                        val buf = codec.getInputBuffer(ix)!!
-                        val n = ex.readSampleData(buf, 0)
-                        if (n < 0) {
-                            codec.queueInputBuffer(ix, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inDone = true
-                        } else {
-                            codec.queueInputBuffer(ix, 0, n, ex.sampleTime, 0)
-                            ex.advance()
-                        }
-                    }
-                }
-                val ox = codec.dequeueOutputBuffer(info, 5_000)
-                if (ox >= 0) {
-                    val buf = codec.getOutputBuffer(ox)!!
-                    if (info.size > 0) {
-                        buf.position(info.offset)
-                        buf.limit(info.offset + info.size)
-                        // PCM 16-bit
-                        val shorts = info.size / 2
-                        var i = 0
-                        while (i + ch - 1 < shorts && out.size < maxSamples) {
-                            var acc = 0
-                            for (c in 0 until ch) {
-                                acc += buf.short.toInt()
-                                i++
-                            }
-                            val sample = (acc / ch) / 32768f
-                            // resample linear simples para 16k
-                            // acumula em taxa src; reamostra depois em bloco — aqui: decima/expande
-                            out.add(sample)
-                        }
-                    }
-                    codec.releaseOutputBuffer(ox, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
-                } else if (ox == MediaCodec.INFO_TRY_AGAIN_LATER && inDone) break
-            }
-            codec.stop(); codec.release()
-            val raw = out.toFloatArray()
-            if (srcSr == SR) raw else resample(raw, srcSr, SR)
-        } catch (e: Throwable) {
-            Log.w(TAG, "pcm", e); null
-        } finally {
-            runCatching { ex.release() }
-        }
-    }
+    /** PCM float mono -1..1 @ 16 kHz — delega ao decoder robusto. */
+    fun decodificarPcm16k(ctx: Context, uri: Uri, maxSec: Int = 60 * 90): FloatArray? =
+        AudioPcm.decodificarPcm16k(ctx, uri, maxSec)
 
-    private fun resample(x: FloatArray, from: Int, to: Int): FloatArray {
-        if (from == to || x.isEmpty()) return x
-        val n = (x.size.toLong() * to / from).toInt().coerceAtLeast(1)
-        val y = FloatArray(n)
-        for (i in 0 until n) {
-            val src = i.toDouble() * from / to
-            val i0 = src.toInt().coerceIn(0, x.lastIndex)
-            val i1 = (i0 + 1).coerceAtMost(x.lastIndex)
-            val t = (src - i0).toFloat()
-            y[i] = x[i0] * (1 - t) + x[i1] * t
-        }
-        return y
-    }
 }
