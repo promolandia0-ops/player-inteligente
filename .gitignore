@@ -12,3 +12,4 @@ PlayerInteligente-*.apk
 *.apk
 tools/testdata/
 org_scan_state.properties
+.kotlin/
