@@ -1,8 +1,9 @@
-.gradle/
-build/
-app/build/
-local.properties
+*.apk
 *.jks
 *.keystore
+.gradle/
+app/build/
+build/
 keystore/
-*.apk
+local.properties
+PlayerInteligente-*.apk

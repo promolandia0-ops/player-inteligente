@@ -69,5 +69,34 @@ class Detector(ctx: Context, usarAcelerador: Boolean) : AutoCloseable {
         }
     }
 
+    /** Putaria se qualquer EXPOSTA em {2,3,4,6,14} >= limiar. Retorna cats UI batendo limiar + flag. */
+    fun pontuarExposto(frame: Bitmap, limiar: Float = OrganizarWorker.LIMIAR): Pair<Set<Categoria>, Boolean> {
+        val c = Canvas(tela); c.drawColor(Color.BLACK)
+        val esc = S.toFloat() / maxOf(frame.width, frame.height)
+        val w = (frame.width * esc).toInt().coerceAtLeast(1); val h = (frame.height * esc).toInt().coerceAtLeast(1)
+        c.drawBitmap(frame, android.graphics.Rect(0, 0, frame.width, frame.height), android.graphics.Rect(0, 0, w, h), paint)
+        tela.getPixels(px, 0, S, 0, 0, S, S)
+        buf.rewind()
+        val n = S * S
+        for (i in 0 until n) { val p = px[i]; buf.put(i, ((p shr 16) and 0xFF) / 255f); buf.put(n + i, ((p shr 8) and 0xFF) / 255f); buf.put(2 * n + i, (p and 0xFF) / 255f) }
+        buf.rewind()
+        OnnxTensor.createTensor(env, buf, longArrayOf(1, 3, S.toLong(), S.toLong())).use { tensor ->
+            sessao.run(mapOf(sessao.inputNames.first() to tensor)).use { r ->
+                val out = (r[0] as OnnxTensor)
+                val a = out.info.shape[2].toInt()
+                val fb = out.floatBuffer
+                fun maxClasse(idx: Int): Float {
+                    val base = (4 + idx) * a; var m = 0f
+                    for (i in 0 until a) { val v = fb.get(base + i); if (v > m) m = v }
+                    return m
+                }
+                val ui = Categoria.entries.associateWith { maxClasse(it.classIndex) }
+                val cats = ui.filter { it.value >= limiar }.keys
+                val putaria = OrganizarWorker.CLASSES_EXPOSTAS.any { maxClasse(it) >= limiar }
+                return cats to putaria
+            }
+        }
+    }
+
     override fun close() { sessao.close() }
 }

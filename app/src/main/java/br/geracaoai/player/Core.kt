@@ -4,7 +4,8 @@ package br.geracaoai.player
 enum class Categoria(val rotulo: String, val classIndex: Int, val cor: Long) {
     PEITO("Peito", 3, 0xFFFF5C8A),      // FEMALE_BREAST_EXPOSED
     BUNDA("Bunda", 2, 0xFFFFB300),      // BUTTOCKS_EXPOSED
-    BUCETA("Buceta", 4, 0xFFB388FF);    // FEMALE_GENITALIA_EXPOSED
+    BUCETA("Buceta", 4, 0xFFB388FF),    // FEMALE_GENITALIA_EXPOSED
+    ANUS("Cuzinho", 6, 0xFF00E5A8);     // ANUS_EXPOSED
 }
 
 data class Segmento(val categoria: Categoria, val inicioMs: Long, val fimMs: Long, val pico: Float)
@@ -13,20 +14,25 @@ data class Segmento(val categoria: Categoria, val inicioMs: Long, val fimMs: Lon
 class Analise(val duracaoMs: Long, val tempos: LongArray, val scores: Map<Categoria, FloatArray>, val parcial: Boolean = false)
 
 object Segmentador {
+    const val MIN_DUR_MS = 1500L
+
     /**
      * Junta frames marcados (score >= limiar) em segmentos. Frames marcados separados por
-     * até [maxGapMs] viram um único segmento. Fim = último frame marcado + intervalo de amostragem.
+     * até [maxGapMs] viram um único segmento. Fim = último frame marcado + intervalo.
+     * Descarta/expande cenas menores que [minDurMs] e funde sobreposições da mesma categoria.
      */
     fun mesclar(
         tempos: LongArray, scores: FloatArray, categoria: Categoria, limiar: Float,
-        intervaloMs: Long, maxGapMs: Long = 2000, minDurMs: Long = 0, duracaoMs: Long = Long.MAX_VALUE
+        intervaloMs: Long, maxGapMs: Long = 2000, minDurMs: Long = MIN_DUR_MS, duracaoMs: Long = Long.MAX_VALUE
     ): List<Segmento> {
-        val out = ArrayList<Segmento>()
+        val brutos = ArrayList<Segmento>()
         var ini = -1L; var ult = -1L; var pico = 0f
         fun fecha() {
             if (ini >= 0) {
-                val fim = minOf(ult + intervaloMs, duracaoMs)
-                if (fim - ini >= minDurMs) out.add(Segmento(categoria, ini, fim, pico))
+                var fim = minOf(ult + maxOf(intervaloMs, 500L), duracaoMs)
+                // garante duração mínima expandindo o fim (sem ultrapassar o vídeo)
+                if (fim - ini < minDurMs) fim = minOf(ini + minDurMs, duracaoMs)
+                if (fim > ini) brutos.add(Segmento(categoria, ini, fim, pico))
             }
             ini = -1; ult = -1; pico = 0f
         }
@@ -39,12 +45,31 @@ object Segmentador {
             ult = t; pico = maxOf(pico, scores[i])
         }
         fecha()
+        return fundirSobrepostos(brutos)
+    }
+
+    /** Funde segmentos da mesma categoria que se tocam/sobreõem. */
+    fun fundirSobrepostos(segs: List<Segmento>, folgaMs: Long = 400L): List<Segmento> {
+        if (segs.isEmpty()) return segs
+        val ord = segs.sortedBy { it.inicioMs }
+        val out = ArrayList<Segmento>()
+        var cur = ord.first()
+        for (i in 1 until ord.size) {
+            val s = ord[i]
+            if (s.inicioMs <= cur.fimMs + folgaMs) {
+                cur = Segmento(cur.categoria, cur.inicioMs, maxOf(cur.fimMs, s.fimMs), maxOf(cur.pico, s.pico))
+            } else {
+                out.add(cur); cur = s
+            }
+        }
+        out.add(cur)
         return out
     }
 
     fun segmentos(a: Analise, cats: Set<Categoria>, limiar: Float, intervaloMs: Long): List<Segmento> =
-        cats.flatMap { c -> a.scores[c]?.let { mesclar(a.tempos, it, c, limiar, intervaloMs, duracaoMs = a.duracaoMs) } ?: emptyList() }
-            .sortedBy { it.inicioMs }
+        cats.flatMap { c ->
+            a.scores[c]?.let { mesclar(a.tempos, it, c, limiar, intervaloMs, duracaoMs = a.duracaoMs) } ?: emptyList()
+        }.sortedBy { it.inicioMs }
 
     fun alvoDoSalto(s: Segmento, offsetMs: Long) = maxOf(0L, s.inicioMs - offsetMs)
 

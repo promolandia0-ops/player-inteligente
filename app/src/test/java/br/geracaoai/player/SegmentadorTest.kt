@@ -12,32 +12,33 @@ class SegmentadorTest {
     }
     @Test fun umSegmentoContinuo() {
         val s = FloatArray(10); for (i in 2..5) s[i] = 0.8f
-        val r = Segmentador.mesclar(t(10), s, Categoria.BUNDA, 0.5f, iv)
+        val r = Segmentador.mesclar(t(10), s, Categoria.BUNDA, 0.5f, iv, minDurMs = 0)
         assertEquals(1, r.size); assertEquals(1000L, r[0].inicioMs); assertEquals(3000L, r[0].fimMs); assertEquals(0.8f, r[0].pico, 1e-6f)
     }
     @Test fun lacunaPequenaEMesclada() {
-        val s = FloatArray(20); s[2] = 0.9f; s[5] = 0.9f // gap 1.5 s <= 2 s
-        assertEquals(1, Segmentador.mesclar(t(20), s, Categoria.PEITO, 0.5f, iv).size)
+        val s = FloatArray(20); s[2] = 0.9f; s[5] = 0.9f
+        assertEquals(1, Segmentador.mesclar(t(20), s, Categoria.PEITO, 0.5f, iv, minDurMs = 0).size)
     }
     @Test fun lacunaGrandeSepara() {
-        val s = FloatArray(30); s[2] = 0.9f; s[12] = 0.7f // gap 5 s
-        val r = Segmentador.mesclar(t(30), s, Categoria.BUCETA, 0.5f, iv)
+        val s = FloatArray(30); s[2] = 0.9f; s[12] = 0.9f
+        val r = Segmentador.mesclar(t(30), s, Categoria.BUCETA, 0.5f, iv, minDurMs = 0)
         assertEquals(2, r.size); assertEquals(6000L, r[1].inicioMs)
     }
     @Test fun limiarAjustavel() {
         val s = FloatArray(10); s[3] = 0.4f
-        assertEquals(0, Segmentador.mesclar(t(10), s, Categoria.PEITO, 0.5f, iv).size)
-        assertEquals(1, Segmentador.mesclar(t(10), s, Categoria.PEITO, 0.3f, iv).size)
+        assertEquals(0, Segmentador.mesclar(t(10), s, Categoria.PEITO, 0.5f, iv, minDurMs = 0).size)
+        assertEquals(1, Segmentador.mesclar(t(10), s, Categoria.PEITO, 0.3f, iv, minDurMs = 0).size)
     }
     @Test fun fimLimitadoADuracao() {
         val s = FloatArray(4) { 0.9f }
-        assertEquals(1700L, Segmentador.mesclar(t(4), s, Categoria.PEITO, 0.5f, iv, duracaoMs = 1700).single().fimMs)
+        assertEquals(1700L, Segmentador.mesclar(t(4), s, Categoria.PEITO, 0.5f, iv, minDurMs = 0, duracaoMs = 1700).single().fimMs)
     }
     @Test fun segmentosPorCategoriaOrdenados() {
         val a = Analise(10_000, t(20), mapOf(
             Categoria.PEITO to FloatArray(20).also { it[10] = 0.9f },
             Categoria.BUNDA to FloatArray(20).also { it[2] = 0.9f },
-            Categoria.BUCETA to FloatArray(20).also { it[15] = 0.9f }))
+            Categoria.BUCETA to FloatArray(20).also { it[15] = 0.9f },
+            Categoria.ANUS to FloatArray(20)))
         val r = Segmentador.segmentos(a, setOf(Categoria.PEITO, Categoria.BUNDA), 0.5f, iv)
         assertEquals(listOf(Categoria.BUNDA, Categoria.PEITO), r.map { it.categoria })
     }
@@ -48,10 +49,28 @@ class SegmentadorTest {
     @Test fun proximaEAnterior() {
         val segs = listOf(Segmento(Categoria.PEITO, 10_000, 12_000, 1f), Segmento(Categoria.BUNDA, 30_000, 31_000, 1f))
         assertEquals(10_000L, Segmentador.proxima(segs, 0, 3000)!!.inicioMs)
-        assertEquals(30_000L, Segmentador.proxima(segs, 7_000, 3000)!!.inicioMs) // já pulou p/ 7 s
+        assertEquals(30_000L, Segmentador.proxima(segs, 7_000, 3000)!!.inicioMs)
         assertNull(Segmentador.proxima(segs, 27_000, 3000))
         assertEquals(10_000L, Segmentador.anterior(segs, 27_000, 3000)!!.inicioMs)
         assertNull(Segmentador.anterior(segs, 7_000, 3000))
+    }
+    @Test fun minDurGaranteComprimento() {
+        val s = FloatArray(10); s[2] = 0.9f
+        val r = Segmentador.mesclar(t(10), s, Categoria.PEITO, 0.5f, iv, minDurMs = 1500, duracaoMs = 10_000)
+        assertEquals(1, r.size)
+        assertTrue(r[0].fimMs - r[0].inicioMs >= 1500)
+    }
+    @Test fun fundeSobrepostos() {
+        val a = Segmento(Categoria.PEITO, 1000, 2000, 0.9f)
+        val b = Segmento(Categoria.PEITO, 1800, 3000, 0.8f)
+        val r = Segmentador.fundirSobrepostos(listOf(a, b))
+        assertEquals(1, r.size); assertEquals(1000L, r[0].inicioMs); assertEquals(3000L, r[0].fimMs)
+        assertEquals(0.9f, r[0].pico, 0f)
+    }
+    @Test fun naoEmiteCenaComprimentoZero() {
+        val s = FloatArray(4); s[3] = 0.9f
+        val r = Segmentador.mesclar(t(4), s, Categoria.BUNDA, 0.5f, iv, minDurMs = 1500, duracaoMs = 1500)
+        assertTrue(r.none { it.fimMs <= it.inicioMs })
     }
 }
 
@@ -63,12 +82,12 @@ class GanhoTest {
     }
     @Test fun limitadorSuave() {
         assertEquals(0.5f, Ganho.limitar(0.5f), 0f)
-        assertTrue(Ganho.limitar(3f) <= 1f && Ganho.limitar(3f) > 0.99f); assertTrue(Ganho.limitar(1.2f) > Ganho.limitar(1.0f)) // monotônico
+        assertTrue(Ganho.limitar(3f) <= 1f && Ganho.limitar(3f) > 0.99f); assertTrue(Ganho.limitar(1.2f) > Ganho.limitar(1.0f))
         assertEquals(-Ganho.limitar(2f), Ganho.limitar(-2f), 0f)
     }
     @Test fun amostraPcmSemEstouro() {
         assertEquals(20000.toShort(), Ganho.amostra(20000, 1f))
-        val s = Ganho.amostra(8000, 2f); assertEquals(16000.0, s.toDouble(), 2.0) // abaixo do joelho: ganho exato
+        val s = Ganho.amostra(8000, 2f); assertEquals(16000.0, s.toDouble(), 2.0)
         assertTrue(Ganho.amostra(30000, 3f) in 26000..32767); assertTrue(Ganho.amostra((-30000).toShort(), 3f) in -32767..-26000)
     }
     @Test fun sistemaContinuo() { assertEquals(0.6f, Ganho.sistema(0.6f), 0f); assertEquals(1f, Ganho.sistema(1.7f), 0f) }
