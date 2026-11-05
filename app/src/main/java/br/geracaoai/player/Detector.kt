@@ -187,7 +187,10 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
     }
 
 
-    /** Scores/áreas por índice NudeNet + áreas UI — para filtro feminino (Por tamanho). */
+    /**
+     * Detalhe p/ pastas Por tamanho (métrica v2). NÃO usado na análise por vídeo.
+     * Extrai caixas YOLO e normaliza por escala corporal no mesmo frame.
+     */
     fun pontuarDetalhe(frame: Bitmap, limiar: Float = OrganizarWorker.LIMIAR): TamanhoLogica.Evidencia {
         preparar(frame)
         OnnxTensor.createTensor(env, buf, longArrayOf(1, 3, S.toLong(), S.toLong())).use { tensor ->
@@ -195,49 +198,59 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
                 val out = (r[0] as OnnxTensor)
                 val a = out.info.shape[2].toInt()
                 val fb = out.floatBuffer
-                fun maxClasseEArea(idx: Int): Pair<Float, Float> {
+                val s = S.toFloat()
+                fun caixas(idx: Int, lim: Float, maxN: Int = 3): List<TamanhoLogica.Caixa> {
                     val base = (4 + idx) * a
-                    var m = 0f; var area = 0f
+                    val tmp = ArrayList<TamanhoLogica.Caixa>(8)
                     for (i in 0 until a) {
                         val v = fb.get(base + i)
-                        if (v >= m) {
-                            m = v
-                            val w = fb.get(2 * a + i).coerceAtLeast(0f)
-                            val h = fb.get(3 * a + i).coerceAtLeast(0f)
-                            area = ((w * h) / (S * S).toFloat()).coerceIn(0f, 1f)
-                        }
+                        if (v < lim) continue
+                        val cx = fb.get(0 * a + i) / s
+                        val cy = fb.get(1 * a + i) / s
+                        val w = (fb.get(2 * a + i) / s).coerceAtLeast(0f)
+                        val h = (fb.get(3 * a + i) / s).coerceAtLeast(0f)
+                        if (w < 0.005f || h < 0.005f) continue
+                        tmp.add(TamanhoLogica.Caixa(v, cx, cy, w.coerceAtMost(1.5f), h.coerceAtMost(1.5f)))
                     }
-                    return m to area
+                    return tmp.sortedByDescending { it.sc }.take(maxN)
+                }
+                fun top(idx: Int, lim: Float = limiar): TamanhoLogica.Caixa? = caixas(idx, lim, 1).firstOrNull()
+                fun maxSc(idx: Int): Float {
+                    val base = (4 + idx) * a
+                    var m = 0f
+                    for (i in 0 until a) m = maxOf(m, fb.get(base + i))
+                    return m
                 }
                 okRodou()
-                fun sc(i: Int) = maxClasseEArea(i)
-                val (fbSc, fbAr) = sc(TamanhoLogica.FEMALE_BREAST_EXPOSED)
-                val (fgSc, fgAr) = sc(TamanhoLogica.FEMALE_GENITALIA_EXPOSED)
-                val (buSc, buAr) = sc(TamanhoLogica.BUTTOCKS_EXPOSED)
-                val (ffSc, ffAr) = sc(TamanhoLogica.FACE_FEMALE)
-                val brCov = sc(TamanhoLogica.FEMALE_BREAST_COVERED).first
-                val buCov = sc(TamanhoLogica.BUTTOCKS_COVERED).first
-                val geCov = sc(TamanhoLogica.FEMALE_GENITALIA_COVERED).first
-                val faceAr = if (ffSc >= limiar) ffAr else 0f
-                // Só *_EXPOSED; métrica relativa ao rosto quando disponível.
-                val ap = if (fbSc >= limiar) TamanhoLogica.metricaRelativa(fbAr, faceAr) else 0f
-                val ab = if (buSc >= limiar) TamanhoLogica.metricaRelativa(buAr, faceAr) else 0f
-                val abu = if (fgSc >= limiar) TamanhoLogica.metricaRelativa(fgAr, faceAr) else 0f
+                val peitos = caixas(TamanhoLogica.FEMALE_BREAST_EXPOSED, limiar, 2)
+                val bunda = top(TamanhoLogica.BUTTOCKS_EXPOSED)
+                val buceta = top(TamanhoLogica.FEMALE_GENITALIA_EXPOSED)
+                val face = top(TamanhoLogica.FACE_FEMALE, limiar * 0.85f) // face um pouco mais permissiva p/ escala
+                val belly = top(TamanhoLogica.BELLY_EXPOSED, limiar * 0.85f)
+                val armpit = top(TamanhoLogica.ARMPITS_EXPOSED, limiar * 0.85f)
+                val feet = top(TamanhoLogica.FEET_EXPOSED, limiar * 0.85f)
+                val fbSc = peitos.maxOfOrNull { it.sc } ?: 0f
+                val buSc = bunda?.sc ?: 0f
+                val fgSc = buceta?.sc ?: 0f
+                val ffSc = face?.sc ?: maxSc(TamanhoLogica.FACE_FEMALE)
+                val ap = TamanhoLogica.metricaPeito(peitos, face, belly, armpit, feet)
+                val ab = TamanhoLogica.metricaBunda(bunda, face, belly, armpit, feet)
+                val abu = TamanhoLogica.metricaBuceta(buceta, face, belly, armpit, feet)
                 return TamanhoLogica.Evidencia(
                     faceFemale = ffSc,
-                    faceMale = sc(TamanhoLogica.FACE_MALE).first,
-                    maleGen = sc(TamanhoLogica.MALE_GENITALIA_EXPOSED).first,
-                    maleBreast = sc(TamanhoLogica.MALE_BREAST_EXPOSED).first,
+                    faceMale = maxSc(TamanhoLogica.FACE_MALE),
+                    maleGen = maxSc(TamanhoLogica.MALE_GENITALIA_EXPOSED),
+                    maleBreast = maxSc(TamanhoLogica.MALE_BREAST_EXPOSED),
                     femaleBreast = fbSc,
                     femaleGen = fgSc,
                     buttocks = buSc,
                     areaPeito = ap,
                     areaBunda = ab,
                     areaBuceta = abu,
-                    faceArea = faceAr,
-                    breastCovered = brCov,
-                    buttocksCovered = buCov,
-                    genCovered = geCov,
+                    faceArea = face?.area ?: 0f,
+                    breastCovered = maxSc(TamanhoLogica.FEMALE_BREAST_COVERED),
+                    buttocksCovered = maxSc(TamanhoLogica.BUTTOCKS_COVERED),
+                    genCovered = maxSc(TamanhoLogica.FEMALE_GENITALIA_COVERED),
                     hitsPeito = if (ap > 0f) 1 else 0,
                     hitsBunda = if (ab > 0f) 1 else 0,
                     hitsBuceta = if (abu > 0f) 1 else 0,

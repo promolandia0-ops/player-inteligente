@@ -199,6 +199,13 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
     fun limpar() { writableDatabase.delete("org", null, null) }
     /** Força reclassificar só os marcados como Putaria (regras mais rígidas na v1.1.2). */
     fun limparNude() { writableDatabase.delete("org", "classif=?", arrayOf("NUDE")) }
+    /** Zera métricas de tamanho (força re-medida na nova versão). */
+    fun zerarAreas() {
+        writableDatabase.execSQL(
+            "UPDATE org SET area_peito=0, area_bunda=0, area_buceta=0 WHERE classif=?",
+            arrayOf("NUDE"),
+        )
+    }
 
     fun salvarAreas(uri: String, areaPeito: Float, areaBunda: Float, areaBuceta: Float) {
         writableDatabase.update(

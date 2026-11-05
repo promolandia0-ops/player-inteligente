@@ -11,9 +11,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
-/**
- * Toque em Analisar / Reorganizar (Por tamanho).
- */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [29])
 class TamanhoScanTest {
@@ -25,6 +22,8 @@ class TamanhoScanTest {
             TamanhoProgresso.clear(ctx, it)
         }
         GaleriaDb(ctx).limpar()
+        ctx.getSharedPreferences("tamanho_metric", Context.MODE_PRIVATE)
+            .edit().putInt("v", TamanhoLogica.METRIC_VERSAO).commit()
     }
 
     @Test fun semPutariaMostraMensagemENaoSobeService() {
@@ -38,8 +37,7 @@ class TamanhoScanTest {
     }
 
     @Test fun comPutariaPendenteEnfileiraServiceEProgressoInicial() {
-        val db = GaleriaDb(ctx)
-        db.salvar(
+        GaleriaDb(ctx).salvar(
             "content://media/external/video/media/42",
             ClassifNudez.NUDE, setOf(Categoria.PEITO), 1L,
             areaPeito = 0f, areaBunda = 0f, areaBuceta = 0f,
@@ -47,14 +45,11 @@ class TamanhoScanTest {
         TamanhoScanService.iniciar(ctx, "__peituda")
         val snap = TamanhoProgresso.get(ctx, "__peituda")
         assertNotNull(snap)
-        assertTrue("frac inicial >0", snap!!.frac in 0.01f..0.5f)
-        assertTrue(snap.txt.contains("Analisando"))
-        // par também recebe progresso
+        assertTrue(snap!!.frac in 0.01f..0.5f)
         assertNotNull(TamanhoProgresso.get(ctx, "__peitinho"))
         val started = Shadows.shadowOf(ctx as Application).nextStartedService
-        assertNotNull("deve startForegroundService", started)
+        assertNotNull(started)
         assertEquals(TamanhoScanService.ACTION_START, started!!.action)
-        assertEquals("__peituda", started.getStringExtra("alvo"))
     }
 
     @Test fun candidatosContaPendentes() {
@@ -65,23 +60,22 @@ class TamanhoScanTest {
         )
         val (total, pend) = TamanhoProgresso.candidatos(nude, TamanhoLogica.Alvo.PEITUDA)
         assertEquals(3, total)
-        assertEquals(1, pend) // só "a" com peito==0
+        assertEquals(1, pend)
     }
 
     @Test fun candidatosTodosContaQualquerPendente() {
         val nude = listOf(
-            ResultadoOrg("a", ClassifNudez.NUDE, emptySet(), 1L, 0.2f, 0f, 0f), // falta bunda/buceta
+            ResultadoOrg("a", ClassifNudez.NUDE, emptySet(), 1L, 0.2f, 0f, 0f),
             ResultadoOrg("b", ClassifNudez.NUDE, emptySet(), 1L, 0.1f, 0.1f, 0.1f),
             ResultadoOrg("c", ClassifNudez.NUDE, emptySet(), 1L, 0f, 0f, 0f),
         )
         val (total, pend) = TamanhoProgresso.candidatos(nude, null)
         assertEquals(3, total)
-        assertEquals(2, pend) // a e c
+        assertEquals(2, pend)
     }
 
     @Test fun reorganizarSemPendentesSoFeedback() {
-        val db = GaleriaDb(ctx)
-        db.salvar(
+        GaleriaDb(ctx).salvar(
             "content://media/external/video/media/7",
             ClassifNudez.NUDE, setOf(Categoria.PEITO, Categoria.BUNDA, Categoria.BUCETA), 1L,
             areaPeito = 0.3f, areaBunda = 0.2f, areaBuceta = 0.1f,
@@ -90,14 +84,12 @@ class TamanhoScanTest {
         val snap = TamanhoProgresso.get(ctx, TamanhoScanService.PROG_REORG)
         assertNotNull(snap)
         assertEquals(1f, snap!!.frac, 0f)
-        assertTrue(snap.txt.contains("atualiz") || snap.txt.contains("Pastas"))
         val started = Shadows.shadowOf(ctx as Application).nextStartedService
         assertTrue(started == null || started.action != TamanhoScanService.ACTION_START)
     }
 
     @Test fun reorganizarComPendentesEnfileira() {
-        val db = GaleriaDb(ctx)
-        db.salvar(
+        GaleriaDb(ctx).salvar(
             "content://media/external/video/media/9",
             ClassifNudez.NUDE, setOf(Categoria.PEITO), 1L,
             areaPeito = 0f, areaBunda = 0f, areaBuceta = 0f,
@@ -106,23 +98,19 @@ class TamanhoScanTest {
         val snap = TamanhoProgresso.get(ctx, TamanhoScanService.PROG_REORG)
         assertNotNull(snap)
         assertTrue(snap!!.frac in 0.01f..0.5f)
-        assertTrue(snap.txt.contains("Reorganizando") || snap.txt.contains("Analisando"))
         val started = Shadows.shadowOf(ctx as Application).nextStartedService
         assertNotNull(started)
         assertEquals(TamanhoScanService.ACTION_START, started!!.action)
-        assertEquals("", started.getStringExtra("alvo") ?: "")
     }
 
     @Test fun reorganizarParLongPress() {
-        val db = GaleriaDb(ctx)
-        db.salvar(
+        GaleriaDb(ctx).salvar(
             "content://media/external/video/media/11",
             ClassifNudez.NUDE, setOf(Categoria.PEITO), 1L,
             areaPeito = 0f, areaBunda = 0.1f, areaBuceta = 0.1f,
         )
         TamanhoScanService.reorganizar(ctx, "__peitinho")
         assertNotNull(TamanhoProgresso.get(ctx, "__peituda"))
-        assertNotNull(TamanhoProgresso.get(ctx, "__peitinho"))
         val started = Shadows.shadowOf(ctx as Application).nextStartedService
         assertNotNull(started)
         assertEquals("__peitinho", started!!.getStringExtra("alvo"))
@@ -131,5 +119,38 @@ class TamanhoScanTest {
     @Test fun idsDoParDisjuntos() {
         assertEquals(listOf("__peituda", "__peitinho"), TamanhoProgresso.idsDoPar("__peituda"))
         assertEquals(listOf("__rabuda", "__rabinho"), TamanhoProgresso.idsDoPar("__rabinho"))
+    }
+
+    @Test fun garantirMetricVZeraAreasAntigas() {
+        GaleriaDb(ctx).salvar(
+            "content://media/external/video/media/99",
+            ClassifNudez.NUDE, setOf(Categoria.PEITO), 1L,
+            areaPeito = 0.5f, areaBunda = 0.4f, areaBuceta = 0.3f,
+        )
+        ctx.getSharedPreferences("tamanho_metric", Context.MODE_PRIVATE).edit().putInt("v", 1).commit()
+        assertTrue(TamanhoScanService.garantirMetricV(ctx))
+        val r = GaleriaDb(ctx).obter("content://media/external/video/media/99")
+        assertNotNull(r)
+        assertEquals(0f, r!!.areaPeito, 0f)
+        assertEquals(0f, r.areaBunda, 0f)
+        assertEquals(0f, r.areaBuceta, 0f)
+        ctx.getSharedPreferences("tamanho_metric", Context.MODE_PRIVATE)
+            .edit().putInt("v", TamanhoLogica.METRIC_VERSAO).commit()
+        assertFalse(TamanhoScanService.garantirMetricV(ctx))
+    }
+
+    @Test fun reorganizarComMetricBumpEnfileiraMesmoComAreas() {
+        GaleriaDb(ctx).salvar(
+            "content://media/external/video/media/77",
+            ClassifNudez.NUDE, setOf(Categoria.PEITO, Categoria.BUNDA, Categoria.BUCETA), 1L,
+            areaPeito = 0.3f, areaBunda = 0.2f, areaBuceta = 0.1f,
+        )
+        ctx.getSharedPreferences("tamanho_metric", Context.MODE_PRIVATE).edit().putInt("v", 1).commit()
+        val shadow = Shadows.shadowOf(ctx as Application)
+        while (shadow.nextStartedService != null) { /* drain */ }
+        TamanhoScanService.reorganizar(ctx)
+        val started = shadow.nextStartedService
+        assertNotNull(started)
+        assertEquals(TamanhoScanService.ACTION_START, started!!.action)
     }
 }

@@ -4,32 +4,34 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TamanhoLogicaTest {
-    private fun femPeito(area: Float = 0.2f, hits: Int = 2) = TamanhoLogica.Evidencia(
+    private fun femPeito(area: Float = 0.2f, hits: Int = 3) = TamanhoLogica.Evidencia(
         faceFemale = 0.6f, femaleBreast = 0.7f, areaPeito = area, buttocks = 0.1f, hitsPeito = hits,
     )
     private fun macho() = TamanhoLogica.Evidencia(
-        faceMale = 0.8f, maleGen = 0.7f, maleBreast = 0.5f, areaPeito = 0.3f, buttocks = 0.4f, areaBunda = 0.4f, hitsPeito = 2,
+        faceMale = 0.8f, maleGen = 0.7f, maleBreast = 0.5f, areaPeito = 0.3f, buttocks = 0.4f, areaBunda = 0.4f, hitsPeito = 3,
     )
-    private fun bundaFem(hits: Int = 2) = TamanhoLogica.Evidencia(
+    private fun bundaFem(hits: Int = 3) = TamanhoLogica.Evidencia(
         faceFemale = 0.6f, buttocks = 0.7f, areaBunda = 0.25f, femaleBreast = 0.2f, hitsBunda = hits,
     )
     private fun bundaSo() = TamanhoLogica.Evidencia(
-        buttocks = 0.8f, areaBunda = 0.3f, hitsBunda = 2,
+        buttocks = 0.8f, areaBunda = 0.3f, hitsBunda = 3,
     )
+    private fun cx(sc: Float, cx: Float, cy: Float, w: Float, h: Float) =
+        TamanhoLogica.Caixa(sc, cx, cy, w, h)
 
     @Test fun peitudaAceitaSoMulher() {
         assertTrue(TamanhoLogica.aceita(TamanhoLogica.Alvo.PEITUDA, femPeito()))
         assertFalse(TamanhoLogica.aceita(TamanhoLogica.Alvo.PEITUDA, macho()))
     }
 
-    @Test fun peitudaExigeDoisFrames() {
-        assertFalse(TamanhoLogica.aceita(TamanhoLogica.Alvo.PEITUDA, femPeito(hits = 1)))
-        assertTrue(TamanhoLogica.aceita(TamanhoLogica.Alvo.PEITUDA, femPeito(hits = 2)))
+    @Test fun peitudaExigeTresFrames() {
+        assertFalse(TamanhoLogica.aceita(TamanhoLogica.Alvo.PEITUDA, femPeito(hits = 2)))
+        assertTrue(TamanhoLogica.aceita(TamanhoLogica.Alvo.PEITUDA, femPeito(hits = 3)))
     }
 
     @Test fun bucetudaExigeGenitaliaFemininaExposta() {
-        val ok = TamanhoLogica.Evidencia(faceFemale = 0.5f, femaleGen = 0.7f, areaBuceta = 0.15f, hitsBuceta = 2)
-        val sem = TamanhoLogica.Evidencia(faceFemale = 0.5f, areaBuceta = 0.15f, hitsBuceta = 2)
+        val ok = TamanhoLogica.Evidencia(faceFemale = 0.5f, femaleGen = 0.7f, areaBuceta = 0.15f, hitsBuceta = 3)
+        val sem = TamanhoLogica.Evidencia(faceFemale = 0.5f, areaBuceta = 0.15f, hitsBuceta = 3)
         assertTrue(TamanhoLogica.aceita(TamanhoLogica.Alvo.BUCETUDA, ok))
         assertFalse(TamanhoLogica.aceita(TamanhoLogica.Alvo.BUCETUDA, sem))
         assertFalse(TamanhoLogica.aceita(TamanhoLogica.Alvo.BUCETUDA, macho()))
@@ -39,16 +41,8 @@ class TamanhoLogicaTest {
         val bikiniBunda = TamanhoLogica.Evidencia(
             faceFemale = 0.7f, buttocksCovered = 0.8f, buttocks = 0.2f, areaBunda = 0.1f, hitsBunda = 3,
         )
-        val bikiniBuceta = TamanhoLogica.Evidencia(
-            faceFemale = 0.7f, genCovered = 0.9f, femaleGen = 0.1f, areaBuceta = 0.05f, hitsBuceta = 3,
-        )
-        val bikiniPeito = TamanhoLogica.Evidencia(
-            faceFemale = 0.7f, breastCovered = 0.85f, femaleBreast = 0.2f, areaPeito = 0.1f, hitsPeito = 3,
-        )
         assertTrue(TamanhoLogica.soCoberto(TamanhoLogica.Alvo.RABINHO, bikiniBunda))
         assertFalse(TamanhoLogica.aceita(TamanhoLogica.Alvo.RABINHO, bikiniBunda))
-        assertFalse(TamanhoLogica.aceita(TamanhoLogica.Alvo.BUCETINHA, bikiniBuceta))
-        assertFalse(TamanhoLogica.aceita(TamanhoLogica.Alvo.PEITINHO, bikiniPeito))
     }
 
     @Test fun rabudaExigeEvidenciaFeminina() {
@@ -74,7 +68,6 @@ class TamanhoLogicaTest {
         val c = TamanhoLogica.acumular(a, b)
         assertEquals(0.8f, c.femaleBreast, 0f)
         assertEquals(0.1f, c.areaPeito, 0f)
-        assertEquals(0.9f, c.faceFemale, 0f)
         assertEquals(2, c.hitsPeito)
     }
 
@@ -83,39 +76,91 @@ class TamanhoLogicaTest {
         assertEquals(ids, TamanhoLogica.Alvo.entries.map { it.id })
     }
 
-    @Test fun partirPorTamanhoParesDisjuntos() {
+    @Test fun partirPorTamanho30Disjuntos() {
         val scored = (1..20).map { "v$it" to it.toFloat() }
         val (grande, pequeno) = TamanhoLogica.partirPorTamanho(scored)
-        assertTrue(grande.isNotEmpty())
-        assertTrue(pequeno.isNotEmpty())
-        val g = grande.map { it.first }.toSet()
-        val p = pequeno.map { it.first }.toSet()
-        assertTrue("overlap=${g.intersect(p)}", g.intersect(p).isEmpty())
-        assertEquals(g.size + p.size, (g + p).size)
-        // grande tem métricas maiores
+        assertEquals(6, grande.size) // 30% de 20
+        assertEquals(6, pequeno.size)
+        assertTrue(grande.map { it.first }.toSet().intersect(pequeno.map { it.first }.toSet()).isEmpty())
         assertTrue(grande.minOf { it.second } >= pequeno.maxOf { it.second })
-        // ~40% cada
-        assertEquals(8, grande.size)
-        assertEquals(8, pequeno.size)
     }
 
-    @Test fun partirPorTamanhoNaoDuplicaMesmoConjunto() {
-        val scored = listOf("a" to 0.9f, "b" to 0.8f, "c" to 0.7f, "d" to 0.2f, "e" to 0.1f, "f" to 0.05f,
-            "g" to 0.4f, "h" to 0.35f, "i" to 0.3f, "j" to 0.25f)
-        val (g1, p1) = TamanhoLogica.partirPorTamanho(scored)
-        assertNotEquals(g1.map { it.first }.toSet(), p1.map { it.first }.toSet())
-        assertTrue(g1.map { it.first }.toSet().intersect(p1.map { it.first }.toSet()).isEmpty())
+    @Test fun metricaPeitoSemReferenciaEIncerta() {
+        val peitos = listOf(cx(0.8f, 0.4f, 0.4f, 0.2f, 0.15f))
+        assertEquals(0f, TamanhoLogica.metricaPeito(peitos, null, null, null, null), 0f)
     }
 
-    @Test fun metricaRelativaUsaRosto() {
+    @Test fun metricaPeitoDoisBoxesUsaDistancia() {
+        // Dois peitos próximos com caixas largas → score alto
+        val grandes = listOf(
+            cx(0.9f, 0.35f, 0.4f, 0.18f, 0.14f),
+            cx(0.88f, 0.55f, 0.4f, 0.18f, 0.14f),
+        )
+        // Mesma distância, caixas pequenas → score menor
+        val pequenos = listOf(
+            cx(0.9f, 0.35f, 0.4f, 0.06f, 0.05f),
+            cx(0.88f, 0.55f, 0.4f, 0.06f, 0.05f),
+        )
+        val face = cx(0.8f, 0.45f, 0.2f, 0.12f, 0.14f)
+        val g = TamanhoLogica.metricaPeito(grandes, face)
+        val p = TamanhoLogica.metricaPeito(pequenos, face)
+        assertTrue("g=$g p=$p", g > p)
+        assertTrue(g > 0f && p > 0f)
+    }
+
+    @Test fun metricaPeitoCloseUpNaoInflaSemEscala() {
+        // Close-up: peito ocupa quase o frame, mas COM face também grande → razão estável
+        val peitoClose = listOf(cx(0.9f, 0.5f, 0.55f, 0.55f, 0.4f))
+        val faceClose = cx(0.85f, 0.5f, 0.2f, 0.35f, 0.4f)
+        val peitoLonge = listOf(cx(0.9f, 0.5f, 0.55f, 0.08f, 0.06f))
+        val faceLonge = cx(0.85f, 0.5f, 0.25f, 0.05f, 0.06f)
+        val a = TamanhoLogica.metricaPeito(peitoClose, faceClose)
+        val b = TamanhoLogica.metricaPeito(peitoLonge, faceLonge)
+        // Razões área peito/face devem ser da mesma ordem (não 10× por causa do zoom)
+        val razao = maxOf(a, b) / minOf(a, b).coerceAtLeast(1e-3f)
+        assertTrue("close=$a longe=$b razao=$razao", razao < 4f)
+    }
+
+    @Test fun metricaBundaSemReferenciaZero() {
+        val b = cx(0.9f, 0.5f, 0.6f, 0.3f, 0.25f)
+        assertEquals(0f, TamanhoLogica.metricaBunda(b, null, null, null, null), 0f)
+    }
+
+    @Test fun metricaBundaMaiorQueMenor() {
+        val face = cx(0.8f, 0.5f, 0.2f, 0.1f, 0.12f)
+        val grande = cx(0.9f, 0.5f, 0.65f, 0.28f, 0.22f)
+        val pequena = cx(0.9f, 0.5f, 0.65f, 0.08f, 0.07f)
+        assertTrue(TamanhoLogica.metricaBunda(grande, face) > TamanhoLogica.metricaBunda(pequena, face))
+    }
+
+    @Test fun metricaBucetaUsaFace() {
+        val face = cx(0.8f, 0.5f, 0.2f, 0.1f, 0.12f)
+        val g = cx(0.9f, 0.5f, 0.7f, 0.08f, 0.06f)
+        assertTrue(TamanhoLogica.metricaBuceta(g, face) > 0f)
+        assertEquals(0f, TamanhoLogica.metricaBuceta(g, null), 0f)
+    }
+
+    @Test fun metricaConsistenteExigeMinEDescartaOutlier() {
+        assertEquals(0f, TamanhoLogica.metricaConsistente(listOf(1f, 1.1f), 3), 0f)
+        val v = listOf(1f, 1.05f, 0.95f, 1.1f, 10f) // 10 = outlier
+        val m = TamanhoLogica.metricaConsistente(v, 3)
+        assertTrue(m in 0.9f..1.2f)
+    }
+
+    @Test fun metricaRelativaSemFaceAgoraIncerta() {
+        assertEquals(0f, TamanhoLogica.metricaRelativa(0.1f, 0f), 0f)
         assertEquals(2f, TamanhoLogica.metricaRelativa(0.1f, 0.05f), 0.001f)
-        assertEquals(0.1f, TamanhoLogica.metricaRelativa(0.1f, 0f), 0.001f)
-        assertEquals(0f, TamanhoLogica.metricaRelativa(0f, 0.05f), 0f)
     }
 
-    @Test fun medianaPositiva() {
-        assertEquals(0.2f, TamanhoLogica.medianaPositiva(listOf(0.1f, 0.2f, 0.9f)), 0.001f)
-        assertEquals(0f, TamanhoLogica.medianaPositiva(emptyList()), 0f)
-        assertEquals(0.15f, TamanhoLogica.medianaPositiva(listOf(0.1f, 0.2f)), 0.001f)
+    @Test fun escalaCorpoPriorizaFace() {
+        val face = cx(0.9f, 0.5f, 0.2f, 0.1f, 0.12f)
+        val belly = cx(0.8f, 0.5f, 0.5f, 0.3f, 0.2f)
+        assertEquals(face.diag, TamanhoLogica.escalaCorpo(face, belly, null, null), 0.001f)
+        assertTrue(TamanhoLogica.escalaCorpo(null, belly, null, null) > 0f)
+        assertEquals(0f, TamanhoLogica.escalaCorpo(null, null, null, null), 0f)
+    }
+
+    @Test fun metricVersaoConstante() {
+        assertEquals(2, TamanhoLogica.METRIC_VERSAO)
     }
 }

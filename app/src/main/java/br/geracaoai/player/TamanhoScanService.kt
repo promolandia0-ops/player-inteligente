@@ -29,9 +29,20 @@ class TamanhoScanService : Service() {
         const val ACTION_STOP = "br.geracaoai.player.TAMANHO_STOP"
         private const val TAG = "TamanhoScan"
         private const val FRAME_MAX = 320
-        private const val FRAMES = 5
+        private const val FRAMES = 16
 
         const val PROG_REORG = "__reorg"
+        private fun metricPrefs(ctx: Context) = ctx.getSharedPreferences("tamanho_metric", Context.MODE_PRIVATE)
+        fun metricVersao(ctx: Context) = metricPrefs(ctx).getInt("v", 1)
+        fun marcarMetricVersao(ctx: Context) =
+            metricPrefs(ctx).edit().putInt("v", TamanhoLogica.METRIC_VERSAO).apply()
+        /** Se a métrica mudou, zera áreas salvas para forçar re-medida no Reorganizar. */
+        fun garantirMetricV(ctx: Context): Boolean {
+            if (metricVersao(ctx) >= TamanhoLogica.METRIC_VERSAO) return false
+            runCatching { GaleriaDb(ctx).zerarAreas() }
+            metricPrefs(ctx).edit().putInt("v", 0).apply() // marca “em migração” até terminar um scan
+            return true
+        }
 
         /** Bloqueia se análise por vídeo, org da galeria ou outro tamanho estiver ativo. */
         private fun ocupado(ctx: Context): String? {
@@ -101,7 +112,9 @@ class TamanhoScanService : Service() {
                 return
             }
             val chave = alvoId.ifBlank { PROG_REORG }
+            val migrou = garantirMetricV(ctx)
             val alvo = TamanhoLogica.Alvo.deId(alvoId)
+            // Após bump de métrica: remede tudo do alvo (áreas zeradas).
             val nude = runCatching {
                 GaleriaDb(ctx).todos().values.filter { it.classif == ClassifNudez.NUDE }
             }.getOrDefault(emptyList())
@@ -112,19 +125,20 @@ class TamanhoScanService : Service() {
                 android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
                 return
             }
-            if (pend == 0) {
-                // Nada a medir: split já usa métricas brutas no DB — só feedback.
+            if (pend == 0 && !migrou) {
                 setProgPar(ctx, chave, 1f, "Pastas atualizadas")
                 android.widget.Toast.makeText(
                     ctx, "Pastas por tamanho atualizadas (sem novos a medir)", android.widget.Toast.LENGTH_SHORT,
                 ).show()
                 return
             }
-            setProgPar(ctx, chave, 0.02f, "Reorganizando 0 de $pend")
+            val n = if (pend == 0) total else pend
+            setProgPar(ctx, chave, 0.02f, if (migrou) "Nova métrica: 0 de $n" else "Reorganizando 0 de $n")
             runCatching { OrganizarScanService.yieldToAnalise(ctx) }
             val i = Intent(ctx, TamanhoScanService::class.java).setAction(ACTION_START)
                 .putExtra("alvo", if (alvoId.isBlank()) "" else alvoId)
                 .putExtra("prog", chave)
+                .putExtra("forcar", migrou)
             try {
                 ContextCompat.startForegroundService(ctx, i)
             } catch (e: Throwable) {
@@ -230,6 +244,7 @@ class TamanhoScanService : Service() {
                 else "Nada novo para medir nesta pasta"
                 setProgPar(ctx, pk, 1f, msg)
                 subir(100, msg)
+                marcarMetricVersao(ctx)
                 stopSelf(); return
             }
             setProgPar(ctx, pk, 0.02f, "Analisando 0 de ${lista.size}")
@@ -283,6 +298,7 @@ class TamanhoScanService : Service() {
             }
             subir(100, "Pronto")
             setProgPar(ctx, pk, 1f, "Pronto")
+            marcarMetricVersao(ctx)
         } catch (e: Throwable) {
             Log.e(TAG, "falhou", e)
             App.gravarErro(ctx, "tamanho", e)
@@ -319,11 +335,11 @@ class TamanhoScanService : Service() {
                     if (ev.areaBuceta > 0f) bucetas.add(ev.areaBuceta)
                 } finally { bmp?.let { if (!it.isRecycled) it.recycle() } }
             }
-            // Métrica bruta = mediana nos frames (estável); hits já somados no acumular.
+            // Mediana consistente (≥3 frames com referência); sem isso → 0 (incerto).
             acc.copy(
-                areaPeito = TamanhoLogica.medianaPositiva(peitos),
-                areaBunda = TamanhoLogica.medianaPositiva(bundas),
-                areaBuceta = TamanhoLogica.medianaPositiva(bucetas),
+                areaPeito = TamanhoLogica.metricaConsistente(peitos, 3),
+                areaBunda = TamanhoLogica.metricaConsistente(bundas, 3),
+                areaBuceta = TamanhoLogica.metricaConsistente(bucetas, 3),
             )
         } catch (e: Throwable) {
             Log.w(TAG, "skip $uri", e); acc
