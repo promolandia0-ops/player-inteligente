@@ -4,7 +4,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import android.net.Uri
 
 enum class ClassifNudez { NUDE, LIMPO, PENDENTE, ERRO }
 
@@ -149,7 +148,7 @@ class OrgPrefs(ctx: Context) {
             setProperty("feitos", feitos.toString())
             setProperty("total", total.toString())
             setProperty("txt", txt)
-            setProperty("ativo", "1")
+            // Não mexe em ativo/pausado — quem controla o ciclo de vida é o Service/Worker.
         }
     }
 }
