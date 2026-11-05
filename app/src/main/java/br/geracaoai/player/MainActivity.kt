@@ -270,7 +270,17 @@ fun Ajustes(voltar: () -> Unit) {
             android.widget.Toast.makeText(ctx, "Reclassificando a galeria do zero…", android.widget.Toast.LENGTH_SHORT).show() }
         BotaoVidro("Apagar análises salvas", icone = { Icon(Icons.Default.DeleteSweep, null, tint = Cores.Texto) }) {
             Cache.limpar(ctx); android.widget.Toast.makeText(ctx, "Análises apagadas", android.widget.Toast.LENGTH_SHORT).show() }
-        Text("100% offline: o app não tem permissão de Internet.\nModelo: NudeNet 320n (detector por parte do corpo) via ONNX Runtime Mobile.",
+        val totalVids = remember { mutableIntStateOf(-1) }
+        LaunchedEffect(Unit) {
+            totalVids.intValue = withContext(Dispatchers.IO) { VideosMedia.total(ctx) }
+        }
+        Text(
+            "MediaStore · ${if (totalVids.intValue < 0) "…" else totalVids.intValue} vídeos" +
+                (if (VideosMedia.temAcessoParcial(ctx)) " · acesso parcial" else "") +
+                " · ${VideosMedia.colecoes(ctx).size} volume(s)",
+            style = MaterialTheme.typography.labelMedium, color = Cores.Suave,
+        )
+        Text("100% offline: o app não tem permissão de Internet.\nModelo: NudeNet 320n (detector por parte do corpo) via ONNX Runtime Mobile.\nSó lista vídeos (fotos do Samsung não entram na contagem).",
             style = MaterialTheme.typography.bodySmall, color = Cores.Suave)
     }
 }

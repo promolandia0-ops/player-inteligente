@@ -276,34 +276,8 @@ class OrganizarScanService : Service() {
 
     private fun analiseRodando(ctx: Context): Boolean = try { AnaliseWorker.rodando(ctx) } catch (_: Throwable) { false }
 
-    private fun listarVideos(ctx: Context, bucketId: String?): List<Video> {
-        val out = ArrayList<Video>()
-        val cols = arrayOf(
-            MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME,
-            MediaStore.Video.Media.DURATION, MediaStore.Video.Media.SIZE,
-            MediaStore.Video.Media.BUCKET_ID, MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
-            MediaStore.Video.Media.DATE_MODIFIED,
-        )
-        val sel = if (bucketId != null) "${MediaStore.Video.Media.BUCKET_ID}=?" else null
-        val args = if (bucketId != null) arrayOf(bucketId) else null
-        ctx.contentResolver.query(
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cols, sel, args,
-            "${MediaStore.Video.Media.DATE_MODIFIED} DESC",
-        )?.use { c ->
-            while (c.moveToNext()) {
-                out.add(
-                    Video(
-                        ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(0)),
-                        c.getString(1) ?: "?", c.getLong(2), c.getLong(3),
-                        runCatching { c.getLong(4).toString() }.getOrElse { c.getString(4) ?: "0" },
-                        c.getString(5)?.takeIf { it.isNotBlank() } ?: "Outros",
-                        c.getLong(6),
-                    ),
-                )
-            }
-        }
-        return out
-    }
+    private fun listarVideos(ctx: Context, bucketId: String?): List<Video> =
+        VideosMedia.listar(ctx, bucketId)
 
     private fun classificarComTimeout(
         ctx: Context, v: Video, det: Detector,

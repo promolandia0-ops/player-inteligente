@@ -68,8 +68,12 @@ fun Biblioteca(
 ) {
     val ctx = LocalContext.current
     val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
-    var temPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(ctx, perm) == PackageManager.PERMISSION_GRANTED) }
-    val pedir = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { temPerm = it }
+    var temPerm by remember { mutableStateOf(VideosMedia.temAlgumAcesso(ctx)) }
+    var acessoParcial by remember { mutableStateOf(VideosMedia.temAcessoParcial(ctx)) }
+    val pedir = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        temPerm = VideosMedia.temAlgumAcesso(ctx)
+        acessoParcial = VideosMedia.temAcessoParcial(ctx)
+    }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u ->
         if (u != null) {
             runCatching { ctx.contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -126,32 +130,10 @@ fun Biblioteca(
     LaunchedEffect(temPerm, orgTick) {
         if (!temPerm) { pedir.launch(perm); return@LaunchedEffect }
         val (vids, mapa, emb) = withContext(Dispatchers.IO) {
-            val l = ArrayList<Video>()
-            val cols = arrayOf(
-                MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME,
-                MediaStore.Video.Media.DURATION, MediaStore.Video.Media.SIZE,
-                MediaStore.Video.Media.BUCKET_ID, MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
-                MediaStore.Video.Media.DATE_MODIFIED,
-            )
-            ctx.contentResolver.query(
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cols, null, null,
-                "${MediaStore.Video.Media.DATE_MODIFIED} DESC",
-            )?.use { c ->
-                while (c.moveToNext()) {
-                    l.add(
-                        Video(
-                            ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(0)),
-                            c.getString(1) ?: "?", c.getLong(2), c.getLong(3),
-                            runCatching { c.getLong(4).toString() }.getOrElse { c.getString(4) ?: "0" },
-                            c.getString(5)?.takeIf { it.isNotBlank() } ?: "Outros",
-                            c.getLong(6),
-                        ),
-                    )
-                }
-            }
-            Triple(l, db.todos(), db.embeddings())
+            Triple(VideosMedia.listar(ctx), db.todos(), db.embeddings())
         }
         videos = vids; orgMap = mapa; embMap = emb
+        acessoParcial = VideosMedia.temAcessoParcial(ctx)
     }
 
     val orgInfos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(OrganizarWorker.NOME).collectAsState(initial = emptyList())
@@ -224,14 +206,15 @@ fun Biblioteca(
                 gridState = scrollPasta,
             )
             abaAtual == AbaGaleria.VIDEOS -> AbaVideos(
-                videos = videos, temPerm = temPerm, onPermitir = { pedir.launch(perm) },
+                videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
+                onPermitir = { pedir.launch(perm) },
                 onAbrir = { guardarScrolls(); onAbrir(it) },
                 sts = sts, avs = avs, orgMap = orgMap,
                 cols = colsVideos, onCols = { colsVideos = it.coerceIn(3, 5) },
                 gridState = scrollVideos, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
             )
             abaAtual == AbaGaleria.ALBUNS -> AbaAlbuns(
-                pastas = pastas, videos = videos, temPerm = temPerm,
+                pastas = pastas, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
                 onPermitir = { pedir.launch(perm) },
                 onPasta = { p ->
                     guardarScrolls(); pastaId = p.id; busca = ""
@@ -242,7 +225,7 @@ fun Biblioteca(
                 gridState = scrollAlbuns, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
             )
             abaAtual == AbaGaleria.INTELIGENTE -> AbaInteligente(
-                smart = albumsVirtuais, videos = videos, temPerm = temPerm,
+                smart = albumsVirtuais, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
                 orgRodando = orgRodando || orgPausado, orgPausado = orgPausado,
                 orgProg = orgProg, orgTxt = orgTxt,
                 onPermitir = { pedir.launch(perm) },
@@ -313,7 +296,7 @@ private fun BarraInferiorSamsung(aba: AbaGaleria, onAba: (AbaGaleria) -> Unit, m
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun AbaVideos(
-    videos: List<Video>?, temPerm: Boolean, onPermitir: () -> Unit, onAbrir: (Video) -> Unit,
+    videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean, onPermitir: () -> Unit, onAbrir: (Video) -> Unit,
     sts: SharedTransitionScope, avs: AnimatedVisibilityScope, orgMap: Map<String, ResultadoOrg>,
     cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState, onAbrirArquivo: () -> Unit,
 ) {
@@ -334,6 +317,7 @@ private fun AbaVideos(
             BotaoGradiente("Permitir acesso aos vídeos", Modifier.padding(16.dp), onClick = onPermitir)
             return
         }
+        BannerAcessoParcial(acessoParcial, onPermitir)
         LazyVerticalGrid(
             columns = GridCells.Fixed(cols), state = gridState,
             contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = 100.dp),
@@ -350,7 +334,7 @@ private fun AbaVideos(
 
 @Composable
 private fun AbaAlbuns(
-    pastas: List<Pasta>, videos: List<Video>?, temPerm: Boolean, onPermitir: () -> Unit,
+    pastas: List<Pasta>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean, onPermitir: () -> Unit,
     onPasta: (Pasta) -> Unit, cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState, onAbrirArquivo: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize().pointerInput(cols) {
@@ -368,7 +352,7 @@ private fun AbaAlbuns(
                     when {
                         !temPerm -> "Sem acesso à galeria"
                         videos == null -> "Carregando…"
-                        else -> "${pastas.size} álbuns · ${videos.size} vídeos"
+                        else -> "${pastas.size} álbuns · ${videos.size} vídeos (só vídeo; fotos não entram)"
                     },
                     style = MaterialTheme.typography.labelMedium, color = Color(0x99FFFFFF),
                 )
@@ -379,6 +363,7 @@ private fun AbaAlbuns(
             BotaoGradiente("Permitir acesso aos vídeos", Modifier.padding(16.dp), onClick = onPermitir)
             return
         }
+        BannerAcessoParcial(acessoParcial, onPermitir)
         LazyVerticalGrid(
             columns = GridCells.Fixed(cols), state = gridState,
             contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 100.dp),
@@ -395,7 +380,7 @@ private fun AbaAlbuns(
 
 @Composable
 private fun AbaInteligente(
-    smart: List<Pasta>, videos: List<Video>?, temPerm: Boolean,
+    smart: List<Pasta>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean,
     orgRodando: Boolean, orgPausado: Boolean, orgProg: Float, orgTxt: String?,
     onPermitir: () -> Unit, onPasta: (Pasta) -> Unit,
     onOrganizar: () -> Unit, onPausarOrg: () -> Unit, onContinuarOrg: () -> Unit, onCancelarOrg: () -> Unit,
@@ -414,7 +399,9 @@ private fun AbaInteligente(
                 Text("Álbuns por nudez · 100% offline", style = MaterialTheme.typography.labelMedium, color = Color(0x99FFFFFF))
                 Spacer(Modifier.height(12.dp))
                 if (!temPerm) BotaoGradiente("Permitir acesso aos vídeos", onClick = onPermitir)
-                else if (orgRodando || orgPausado) {
+                else {
+                BannerAcessoParcial(acessoParcial, onPermitir)
+                if (orgRodando || orgPausado) {
                     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Color(0xFF1A1A1A)).padding(14.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
@@ -445,6 +432,7 @@ private fun AbaInteligente(
                         modifier = Modifier.padding(top = 6.dp, start = 4.dp),
                     )
                 }
+                }
                 if (smart.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
                     Text("Álbuns", style = MaterialTheme.typography.titleSmall, color = Color(0x99FFFFFF))
@@ -457,6 +445,24 @@ private fun AbaInteligente(
         items(smart.size, key = { smart[it].id }) { i ->
             CartaAlbumSamsung(smart[i], destaque = smart[i].id == "__putaria") { onPasta(smart[i]) }
         }
+    }
+}
+
+
+@Composable
+private fun BannerAcessoParcial(mostrar: Boolean, onPermitir: () -> Unit) {
+    if (!mostrar) return
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(14.dp)).background(Color(0x33FF5C8A)).padding(12.dp),
+    ) {
+        Text("Acesso parcial à galeria", color = Color.White, style = MaterialTheme.typography.titleSmall)
+        Text(
+            "O Android só liberou alguns arquivos. Toque para permitir todos os vídeos — assim as pastas ficam com a contagem certa.",
+            color = Color(0xCCFFFFFF), style = MaterialTheme.typography.labelSmall,
+        )
+        Spacer(Modifier.height(8.dp))
+        BotaoGradiente("Permitir todos os vídeos", Modifier.fillMaxWidth(), onClick = onPermitir)
     }
 }
 
@@ -479,7 +485,7 @@ private fun CartaAlbumSamsung(p: Pasta, destaque: Boolean = false, onClick: () -
                 p.nome, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            Text("${p.contagem}", color = Color(0xCCFFFFFF), fontSize = 12.sp)
+            Text(if (p.contagem == 1) "1 vídeo" else "${p.contagem} vídeos", color = Color(0xCCFFFFFF), fontSize = 12.sp)
         }
     }
 }
@@ -518,7 +524,7 @@ private fun PastaVideosTela(
             IconButton(onClick = onVoltar) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Voltar", tint = Color.White) }
             Column(Modifier.weight(1f)) {
                 Text(pasta.nome, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${filtrados.size} vídeos", style = MaterialTheme.typography.labelSmall, color = Color(0x99FFFFFF))
+                Text(if (filtrados.size == 1) "1 vídeo" else "${filtrados.size} vídeos", style = MaterialTheme.typography.labelSmall, color = Color(0x99FFFFFF))
             }
             Box {
                 IconButton(onClick = { onMenuOrdem(true) }) { Icon(Icons.AutoMirrored.Filled.Sort, "Ordenar", tint = Color.White) }
