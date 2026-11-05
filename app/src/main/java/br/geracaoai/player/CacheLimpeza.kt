@@ -25,8 +25,9 @@ object CacheLimpeza {
     fun tamanhoMelhorados(ctx: Context): Long = bytes(dirMelhorados(ctx))
 
     fun dirMelhorados(ctx: Context): File {
-        val pub = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
-        return File(pub, "PlayerInteligente/Melhorados").apply { mkdirs() }
+        // App-specific: não precisa WRITE_EXTERNAL_STORAGE (falhava em Android 10+ → Melhorar 0%).
+        val base = ctx.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: File(ctx.filesDir, "movies")
+        return File(base, "Melhorados").apply { mkdirs() }
     }
 
     fun listarMelhorados(ctx: Context): List<File> =
