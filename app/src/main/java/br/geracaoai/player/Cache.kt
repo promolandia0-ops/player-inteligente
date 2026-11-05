@@ -63,6 +63,8 @@ class Prefs(ctx: Context) {
     var offsetS: Int get() = p.getInt("offset", 3); set(v) = p.edit().putInt("offset", v).apply()
     var fps: Int get() = p.getInt("fps", 2); set(v) = p.edit().putInt("fps", v).apply()
     var acelerador: Boolean get() = p.getBoolean("nnapi2", false); set(v) = p.edit().putBoolean("nnapi2", v).apply()
+    /** Continua o áudio/vídeo com a tela desligada (wake lock local). */
+    var telaDesligada: Boolean get() = p.getBoolean("tela_off", false); set(v) = p.edit().putBoolean("tela_off", v).apply()
     var cats: Set<Categoria>
         get() = p.getStringSet("cats", Categoria.entries.map { it.name }.toSet())!!.mapNotNull { runCatching { Categoria.valueOf(it) }.getOrNull() }.toSet()
         set(v) = p.edit().putStringSet("cats", v.map { it.name }.toSet()).apply()

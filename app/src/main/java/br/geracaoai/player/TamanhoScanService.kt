@@ -96,7 +96,7 @@ class TamanhoScanService : Service() {
                     subir(p, "${i + 1}/${lista.size}")
                     val (ap, ab, abu) = medir(ctx, Uri.parse(uriStr), det)
                     // UPDATE áreas sem apagar emb: update parcial
-                    db.salvarAreas(uriStr, ap, ab, abu)
+                    db.salvarAreas(VideosMedia.chaveEstavel(uriStr), ap, ab, abu)
                 }
             }
             subir(100, "Pronto")

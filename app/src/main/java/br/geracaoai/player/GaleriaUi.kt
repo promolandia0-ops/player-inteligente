@@ -129,14 +129,30 @@ fun Biblioteca(
         if (!scrollVideos.isScrollInProgress && !scrollAlbuns.isScrollInProgress && !scrollIntel.isScrollInProgress && !scrollPasta.isScrollInProgress) guardarScrolls()
     }
 
+    var recupMsg by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(temPerm, orgTick) {
         if (!temPerm) { pedir.launch(perm); return@LaunchedEffect }
-        val (vids, mapa, emb) = withContext(Dispatchers.IO) {
-            Triple(VideosMedia.listar(ctx), db.todosPorChaveEstavel(), db.embeddings())
+        val packed = withContext(Dispatchers.IO) {
+            val lista = VideosMedia.listar(ctx)
+            val r = OrgRecuperacao.rodarSePreciso(ctx, lista)
+            lista to (db.todosPorChaveEstavel() to (db.embeddings() to r))
         }
+        val vids = packed.first
+        val mapa = packed.second.first
+        val emb = packed.second.second.first
+        val rel = packed.second.second.second
         videos = vids; orgMap = mapa; embMap = emb
         analiseProg = AnaliseProgresso.todosAtivos(ctx)
         acessoParcial = VideosMedia.temAcessoParcial(ctx)
+        if (rel.casadosComGaleria > 0 || rel.urisRenomeadas > 0 || rel.putariaProvavelmenteApagada) {
+            recupMsg = buildString {
+                append("Recuperados ${rel.casadosComGaleria} de ${rel.totalVideos}")
+                if (rel.limpoNoDb > 0) append(" · Sem nudez ${rel.limpoNoDb}")
+                if (rel.nudeNoDb > 0) append(" · Putaria ${rel.nudeNoDb}")
+                if (rel.putariaProvavelmenteApagada && rel.nudeNoDb == 0)
+                    append(" · Putaria da v1.3.0 não pôde ser restaurada (bug apagou essas linhas); reorganize só o que faltar")
+            }
+        }
     }
 
     val orgInfos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(OrganizarWorker.NOME).collectAsState(initial = emptyList())
@@ -159,10 +175,8 @@ fun Biblioteca(
     val orgProg = orgSnap.c
     val orgTxt = orgSnap.d
     LaunchedEffect(orgPrefsTick.intValue, orgInfo?.state) {
-        if (orgRodando || orgPausado || orgInfo?.state == WorkInfo.State.SUCCEEDED || orgInfo?.state == WorkInfo.State.CANCELLED) {
-            val (mapa, emb) = withContext(Dispatchers.IO) { db.todosPorChaveEstavel() to db.embeddings() }
-            orgMap = mapa; embMap = emb
-        }
+        val (mapa, emb) = withContext(Dispatchers.IO) { db.todosPorChaveEstavel() to db.embeddings() }
+        orgMap = mapa; embMap = emb
     }
 
     val pastas = remember(videos) { videos?.let { pastasDe(it) } ?: emptyList() }
@@ -254,7 +268,7 @@ fun Biblioteca(
             abaAtual == AbaGaleria.INTELIGENTE -> AbaInteligente(
                 smart = albumsVirtuais, pastasTamanho = pastasTamanho, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
                 orgRodando = orgRodando || orgPausado, orgPausado = orgPausado,
-                orgProg = orgProg, orgTxt = orgTxt,
+                orgProg = orgProg, orgTxt = orgTxt, recupMsg = recupMsg,
                 onPermitir = { pedir.launch(perm) },
                 onPasta = { p ->
                     guardarScrolls(); pastaId = p.id; busca = ""
@@ -414,7 +428,7 @@ private fun AbaAlbuns(
 @Composable
 private fun AbaInteligente(
     smart: List<Pasta>, pastasTamanho: List<Pasta>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean,
-    orgRodando: Boolean, orgPausado: Boolean, orgProg: Float, orgTxt: String?,
+    orgRodando: Boolean, orgPausado: Boolean, orgProg: Float, orgTxt: String?, recupMsg: String?,
     onPermitir: () -> Unit, onPasta: (Pasta) -> Unit,
     onOrganizar: () -> Unit, onPausarOrg: () -> Unit, onContinuarOrg: () -> Unit, onCancelarOrg: () -> Unit,
     onReanalisar: () -> Unit, gridState: LazyGridState,
@@ -433,6 +447,10 @@ private fun AbaInteligente(
                 Text("Inteligente", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold), color = Color.White)
                 Text("Álbuns por nudez · 100% offline", style = MaterialTheme.typography.labelMedium, color = Color(0x99FFFFFF))
                 Text("Toque em Peituda/Rabuda/Bucetuda para medir só a Putaria (não rescaneia a galeria).", style = MaterialTheme.typography.labelSmall, color = Color(0x66FFFFFF))
+                if (!recupMsg.isNullOrBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(recupMsg, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFFB74D))
+                }
                 Spacer(Modifier.height(12.dp))
                 if (!temPerm) BotaoGradiente("Permitir acesso aos vídeos", onClick = onPermitir)
                 else {

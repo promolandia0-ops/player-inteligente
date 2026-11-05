@@ -12,6 +12,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Size
@@ -64,6 +65,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
@@ -367,6 +369,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var cues by remember { mutableStateOf(LegendaEngine.carregar(ctx, video.uri)) }
     var legendaStatus by remember { mutableStateOf<String?>(null) }
     var menuPlayer by remember { mutableStateOf(false) }
+    var telaOff by remember { mutableStateOf(prefs.telaDesligada) }
     var melhorProg by remember { mutableStateOf<Pair<Float, String?>?>(null) }
     var legendaProg by remember { mutableStateOf<Float?>(null) }
     var mediaUri by remember(video.uri) { mutableStateOf(video.uri) }
@@ -420,6 +423,17 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     }
     LaunchedEffect(pos) { if (traduzirLegenda) LegendaEngine.seek(pos) }
     var tocando by remember { mutableStateOf(false) }
+    // Mantém tela ligada ao tocar; opção "tela desligada" usa wake lock local p/ continuar o áudio.
+    DisposableEffect(tocando, telaOff) {
+        val w = act.window
+        if (tocando && !telaOff) w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        player.setWakeMode(if (telaOff) C.WAKE_MODE_LOCAL else C.WAKE_MODE_NONE)
+        onDispose {
+            w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            runCatching { player.setWakeMode(C.WAKE_MODE_NONE) }
+        }
+    }
     var velocidade by remember { mutableFloatStateOf(1f) }
     var controles by remember { mutableStateOf(true) }
     var vsize by remember { mutableStateOf(VideoSize.UNKNOWN) }
@@ -647,6 +661,15 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                                 onClick = {
                                     MelhorarService.iniciar(ctx, video.uri, video.nome)
                                     android.widget.Toast.makeText(ctx, "Melhorando em segundo plano…", android.widget.Toast.LENGTH_SHORT).show()
+                                    menuPlayer = false
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (telaOff) "Tela desligada: ligado" else "Tocar com tela desligada") },
+                                onClick = {
+                                    telaOff = !telaOff
+                                    prefs.telaDesligada = telaOff
+                                    hud = if (telaOff) "Tela desligada: áudio continua" else "Tela permanece ligada"
                                     menuPlayer = false
                                 },
                             )

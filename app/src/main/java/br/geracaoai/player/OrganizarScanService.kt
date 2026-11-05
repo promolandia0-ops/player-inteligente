@@ -164,26 +164,22 @@ class OrganizarScanService : Service() {
                 stopSelf()
                 return
             }
-            // NUNCA apagar Putaria/classificações em upgrades. classif_v antigo só marca flag.
-            val sp = ctx.getSharedPreferences("org_versao", MODE_PRIVATE)
-            if (sp.getInt("classif_v", 1) < 3) sp.edit().putInt("classif_v", 3).commit()
-            val feitosMap = HashMap<String, Long>() // key canônica → mtime
-            db.todos().forEach { (u, r) ->
-                if (r.classif == ClassifNudez.NUDE || r.classif == ClassifNudez.LIMPO || r.classif == ClassifNudez.ERRO)
-                    feitosMap[VideosMedia.chaveEstavel(u)] = r.mtime
-            }
+            // Recuperação: normaliza URIs; NUNCA limparNude. Match só por chave (ignora mtime).
+            runCatching { OrgRecuperacao.rodarSePreciso(ctx, videos) }
+            val feitosMap: MutableMap<String, ClassifNudez> = OrgRecuperacao.mapaFeitos(db) // chave → classif
             val total = videos.size
-            var feitos = videos.count { v ->
-                val m = feitosMap[VideosMedia.chaveEstavel(v.uri.toString())]
-                m != null && m == v.dataMod
-            }
+            var feitos = videos.count { OrgRecuperacao.estaFeito(feitosMap, it.uri.toString()) }
             prefs.total = total
             prefs.feitos = feitos
             atualizar(nm, feitos, total, "Retomando · $feitos de $total")
+            Log.i(TAG, "retomando feitos=$feitos/$total dbFeitos=${feitosMap.size}")
 
             Exclusao.scanBatida(ctx)
-            Detector(ctx, Prefs(ctx).acelerador).use { det ->
+            // CPU-only no scan da galeria: NNAPI derrubava o :scan e ficava em "Retomando · 0".
+            Detector(ctx, false).use { det ->
+                var iVid = 0
                 for (v in videos) {
+                    iVid++
                     if (stopFlag.get()) break
                     if (pauseFlag.get() || OrganizarWorker.estaPausado(ctx)) {
                         prefs.pausado = true
@@ -193,21 +189,24 @@ class OrganizarScanService : Service() {
                     }
                     Exclusao.scanBatida(ctx)
                     if (analiseRodando(ctx) || Exclusao.playerEstaAberto(ctx)) {
-                        Log.i(TAG, "análise por vídeo — pausando galeria")
+                        Log.i(TAG, "análise/player — pausando galeria (feitos=$feitos)")
                         prefs.ativo = true
+                        prefs.txt = "Aguardando player/análise · $feitos de $total"
+                        atualizar(nm, feitos, total, prefs.txt)
                         OrganizarWorker.reagendar(ctx)
                         break
                     }
-                    val key = v.uri.toString()
-                    val chave = VideosMedia.chaveEstavel(key)
-                    val ant = feitosMap[chave]
-                    if (ant != null && ant == v.dataMod) {
-                        // Já classificado: NÃO reanalisa. Embedding opcional e separado — não bloqueia "feitos".
-                        if (!db.temEmb(key) && !stopFlag.get() && !pauseFlag.get()
+                    val chave = VideosMedia.chaveEstavel(v.uri.toString())
+                    if (OrgRecuperacao.estaFeito(feitosMap, chave)) {
+                        // Já classificado: não reanalisa. Atualiza UI a cada 50 p/ não parecer travado.
+                        if (iVid % 50 == 0) {
+                            atualizar(nm, feitos, total, "Retomando · $feitos de $total")
+                        }
+                        if (!db.temEmb(chave) && !stopFlag.get() && !pauseFlag.get()
                             && !Exclusao.playerEstaAberto(ctx) && !analiseRodando(ctx)
                         ) {
                             runCatching {
-                                Semelhanca.extrairDeVideo(ctx, v.uri)?.let { db.salvarEmb(key, it) }
+                                Semelhanca.extrairDeVideo(ctx, v.uri)?.let { db.salvarEmb(chave, it) }
                             }
                         }
                         continue
@@ -216,19 +215,18 @@ class OrganizarScanService : Service() {
                     val res = classificarComTimeout(ctx, v, det)
                     val classif = res.classif; val cats = res.cats
                     try {
-                        db.salvar(key, classif, cats, v.dataMod, res.areaPeito, res.areaBunda, res.areaBuceta)
+                        db.salvar(chave, classif, cats, v.dataMod, res.areaPeito, res.areaBunda, res.areaBuceta)
                     } catch (oom: OutOfMemoryError) {
                         Log.e(TAG, "OOM salvar", oom)
-                        runCatching { db.salvar(key, ClassifNudez.ERRO, emptySet(), v.dataMod) }
+                        runCatching { db.salvar(chave, ClassifNudez.ERRO, emptySet(), v.dataMod) }
                         System.gc()
                     }
-                    // Embedding de semelhança (histograma) — após classificar, sequencial, sem mexer no Detector.
                     if (classif != ClassifNudez.ERRO && !stopFlag.get() && !Exclusao.playerEstaAberto(ctx)) {
                         runCatching {
-                            Semelhanca.extrairDeVideo(ctx, v.uri)?.let { db.salvarEmb(key, it) }
+                            Semelhanca.extrairDeVideo(ctx, v.uri)?.let { db.salvarEmb(chave, it) }
                         }
                     }
-                    feitosMap[chave] = v.dataMod
+                    feitosMap[chave] = classif
                     feitos++
                     prefs.feitos = feitos
                     val txt = "$feitos de $total · ${v.nome.take(24)}"
@@ -236,7 +234,6 @@ class OrganizarScanService : Service() {
                     atualizar(nm, feitos, total, txt)
                     if (feitos % 25 == 0) System.gc()
                     if (travado.get()) {
-                        // Decoder preso numa thread: encerra o processo :scan limpo; retoma depois pulando este vídeo.
                         prefs.ativo = true
                         OrganizarWorker.reagendar(ctx)
                         stopSelf()

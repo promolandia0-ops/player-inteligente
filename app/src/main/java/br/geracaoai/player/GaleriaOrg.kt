@@ -124,6 +124,78 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
         return out
     }
 
+    /**
+     * Reescreve URIs do DB para chave canônica (`external_primary` → `external`).
+     * Não apaga classificações. Retorna quantas linhas mudaram de chave.
+     */
+    fun normalizarUris(): Int {
+        data class Row(
+            val old: String, val neu: String, val classif: String, val cats: String, val mtime: Long,
+            val ap: Float, val ab: Float, val abu: Float, val emb: ByteArray?, val scanned: Long,
+        )
+        val db = writableDatabase
+        val rows = ArrayList<Row>()
+        db.rawQuery(
+            "SELECT uri,classif,cats,mtime,area_peito,area_bunda,area_buceta,emb,scanned_at FROM org", null,
+        ).use { c ->
+            val iEmb = c.getColumnIndex("emb")
+            val iSc = c.getColumnIndex("scanned_at")
+            while (c.moveToNext()) {
+                val u = c.getString(0)
+                val k = VideosMedia.chaveEstavel(u)
+                if (k == u) continue
+                rows += Row(
+                    u, k, c.getString(1), c.getString(2), c.getLong(3),
+                    c.getFloat(4), c.getFloat(5), c.getFloat(6),
+                    if (iEmb >= 0 && !c.isNull(iEmb)) c.getBlob(iEmb) else null,
+                    if (iSc >= 0 && !c.isNull(iSc)) c.getLong(iSc) else 0L,
+                )
+            }
+        }
+        if (rows.isEmpty()) return 0
+        var n = 0
+        db.beginTransaction()
+        try {
+            for (r in rows) {
+                val destClass = db.rawQuery("SELECT classif FROM org WHERE uri=?", arrayOf(r.neu)).use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                }
+                val cv = ContentValues().apply {
+                    put("uri", r.neu); put("classif", r.classif); put("cats", r.cats); put("mtime", r.mtime)
+                    put("area_peito", r.ap); put("area_bunda", r.ab); put("area_buceta", r.abu)
+                    put("scanned_at", r.scanned)
+                    if (r.emb != null) put("emb", r.emb)
+                }
+                when {
+                    destClass == null -> {
+                        // delete+insert (UPDATE de PK é frágil)
+                        db.delete("org", "uri=?", arrayOf(r.old))
+                        db.insertWithOnConflict("org", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+                        n++
+                    }
+                    else -> {
+                        val velhoMelhor = r.classif == "NUDE" ||
+                            (r.classif == "LIMPO" && destClass != "NUDE" && destClass != "LIMPO")
+                        if (velhoMelhor) {
+                            db.update("org", ContentValues().apply {
+                                put("classif", r.classif); put("cats", r.cats); put("mtime", r.mtime)
+                                put("area_peito", r.ap); put("area_bunda", r.ab); put("area_buceta", r.abu)
+                                put("scanned_at", r.scanned)
+                                if (r.emb != null) put("emb", r.emb)
+                            }, "uri=?", arrayOf(r.neu))
+                        }
+                        db.delete("org", "uri=?", arrayOf(r.old))
+                        n++
+                    }
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return n
+    }
+
     fun limpar() { writableDatabase.delete("org", null, null) }
     /** Força reclassificar só os marcados como Putaria (regras mais rígidas na v1.1.2). */
     fun limparNude() { writableDatabase.delete("org", "classif=?", arrayOf("NUDE")) }

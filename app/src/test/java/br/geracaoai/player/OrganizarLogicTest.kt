@@ -4,42 +4,75 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Simula a lógica de retomada/progresso da varredura sem Android Runtime.
- * Espelha o filtro de "já analisados" e o cálculo "x de total".
+ * Lógica de retomada/progresso da varredura (espelha OrgRecuperacao + scan).
+ * v1.3.2: match só por chave estável — mtime NÃO zera progresso.
  */
 class OrganizarLogicTest {
 
     data class FakeVideo(val uri: String, val mtime: Long)
     data class FakeResult(val classif: ClassifNudez, val mtime: Long)
 
-    private fun pendentes(videos: List<FakeVideo>, db: Map<String, FakeResult>): List<FakeVideo> =
-        videos.filter { v ->
-            val ant = db[v.uri]
-            ant == null || ant.mtime != v.mtime || ant.classif == ClassifNudez.PENDENTE
-        }
+    private fun chave(u: String) = VideosMedia.chaveEstavel(u)
 
-    private fun feitosCount(videos: List<FakeVideo>, db: Map<String, FakeResult>): Int =
-        videos.count { v ->
-            val ant = db[v.uri]
-            ant != null && ant.mtime == v.mtime &&
-                (ant.classif == ClassifNudez.NUDE || ant.classif == ClassifNudez.LIMPO || ant.classif == ClassifNudez.ERRO)
+    private fun mapaFeitos(db: Map<String, FakeResult>): Map<String, ClassifNudez> {
+        val out = HashMap<String, ClassifNudez>()
+        for ((u, r) in db) {
+            if (r.classif == ClassifNudez.NUDE || r.classif == ClassifNudez.LIMPO || r.classif == ClassifNudez.ERRO) {
+                out[chave(u)] = r.classif
+            }
         }
-
-    @Test fun retomaPulaJaAnalisados() {
-        val videos = (1..5000).map { FakeVideo("u$it", 100L + it) }
-        val db = videos.take(150).associate { it.uri to FakeResult(ClassifNudez.LIMPO, it.mtime) }
-        val pend = pendentes(videos, db)
-        assertEquals(4850, pend.size)
-        assertEquals(150, feitosCount(videos, db))
-        // Progresso deve ser 150/5000 = 3%, NÃO 0/4850
-        val frac = feitosCount(videos, db).toFloat() / videos.size
-        assertEquals(0.03f, frac, 0.0001f)
+        return out
     }
 
-    @Test fun mtimeMudouReanalisa() {
-        val v = FakeVideo("u1", 200L)
-        val db = mapOf("u1" to FakeResult(ClassifNudez.NUDE, 100L))
-        assertEquals(1, pendentes(listOf(v), db).size)
+    private fun estaFeito(feitos: Map<String, ClassifNudez>, uri: String): Boolean {
+        val c = feitos[chave(uri)] ?: return false
+        return c == ClassifNudez.NUDE || c == ClassifNudez.LIMPO || c == ClassifNudez.ERRO
+    }
+
+    private fun pendentes(videos: List<FakeVideo>, db: Map<String, FakeResult>): List<FakeVideo> {
+        val feitos = mapaFeitos(db)
+        return videos.filter { !estaFeito(feitos, it.uri) }
+    }
+
+    private fun feitosCount(videos: List<FakeVideo>, db: Map<String, FakeResult>): Int {
+        val feitos = mapaFeitos(db)
+        return videos.count { estaFeito(feitos, it.uri) }
+    }
+
+    @Test fun retomaPulaJaAnalisados() {
+        val videos = (1..5000).map { FakeVideo("content://media/external/video/media/$it", 100L + it) }
+        val db = videos.take(150).associate { it.uri to FakeResult(ClassifNudez.LIMPO, it.mtime) }
+        assertEquals(4850, pendentes(videos, db).size)
+        assertEquals(150, feitosCount(videos, db))
+        assertEquals(0.03f, feitosCount(videos, db).toFloat() / videos.size, 0.0001f)
+    }
+
+    @Test fun mtimeMudouNAOReanalisaMais() {
+        // v1.3.2: mtime diferente não manda pra pendente (evita Retomando 0)
+        val v = FakeVideo("content://media/external/video/media/1", 200L)
+        val db = mapOf(v.uri to FakeResult(ClassifNudez.NUDE, 100L))
+        assertEquals(0, pendentes(listOf(v), db).size)
+        assertEquals(1, feitosCount(listOf(v), db))
+    }
+
+    @Test fun externalPrimaryCasaComExternal() {
+        val video = FakeVideo("content://media/external/video/media/42", 1L)
+        val db = mapOf(
+            "content://media/external_primary/video/media/42" to FakeResult(ClassifNudez.LIMPO, 99L),
+        )
+        assertEquals(1, feitosCount(listOf(video), db))
+        assertEquals(0, pendentes(listOf(video), db).size)
+    }
+
+    @Test fun aposLimparNudeSoLimpoConta() {
+        // Simula bug v1.3.0: NUDE apagados, LIMPO ficam
+        val videos = (1..100).map { FakeVideo("content://media/external/video/media/$it", 1L) }
+        val db = videos.filter { it.uri.substringAfterLast('/').toInt() % 2 == 0 }
+            .associate { it.uri to FakeResult(ClassifNudez.LIMPO, 1L) }
+        assertEquals(50, feitosCount(videos, db))
+        assertEquals(50, pendentes(videos, db).size)
+        // NÃO fica 0 de 100 se ainda há LIMPO
+        assertTrue(feitosCount(videos, db) > 0)
     }
 
     @Test fun pendenteNaoContaComoFeito() {
@@ -57,7 +90,6 @@ class OrganizarLogicTest {
     }
 
     @Test fun framesKeyframeDistribuidos() {
-        // 6 frames em vídeo de 60s → tempos 0,12,24,36,48,60 (s) em ms
         val dur = 60_000L
         val frames = 6
         val tempos = (0 until frames).map { i -> if (frames == 1) 0L else (dur * i) / (frames - 1) }
@@ -65,30 +97,22 @@ class OrganizarLogicTest {
     }
 
     @Test fun stressSimula5000SequencialComOomSkip() {
-        // Simula processar 5000 itens, alguns "OOM"/timeout → ERRO, progresso monotônico
         val total = 5000
         val db = LinkedHashMap<String, FakeResult>()
         var feitos = 0
         for (i in 1..total) {
-            val uri = "u$i"
+            val uri = "content://media/external/video/media/$i"
             val classif = when {
-                i % 97 == 0 -> ClassifNudez.ERRO      // timeout/OOM simulado
+                i % 97 == 0 -> ClassifNudez.ERRO
                 i % 11 == 0 -> ClassifNudez.NUDE
                 else -> ClassifNudez.LIMPO
             }
             db[uri] = FakeResult(classif, i.toLong())
             feitos++
-            val frac = feitos.toFloat() / total
-            assertTrue(frac in 0f..1f)
-            // Nunca "reinicia" o contador
             assertEquals(feitos, db.size)
         }
-        assertEquals(total, feitos)
-        assertEquals(total / 97, db.values.count { it.classif == ClassifNudez.ERRO })
-        // Retomada a partir de 3% não zera
-        val videos = (1..total).map { FakeVideo("u$it", it.toLong()) }
-        val ja = feitosCount(videos, db)
-        assertEquals(total, ja)
+        val videos = (1..total).map { FakeVideo("content://media/external/video/media/$it", it.toLong()) }
+        assertEquals(total, feitosCount(videos, db))
         assertEquals(0, pendentes(videos, db).size)
     }
 
@@ -97,5 +121,14 @@ class OrganizarLogicTest {
         assertEquals(8, OrganizarWorker.FRAMES)
         assertTrue(OrganizarWorker.LIMIAR >= 0.5f)
         assertEquals(2, OrganizarWorker.CONFIRMACOES)
+    }
+
+    @Test fun retomandoZeroSoSeDbVazio() {
+        val videos = (1..1314).map { FakeVideo("content://media/external/video/media/$it", 1L) }
+        assertEquals(0, feitosCount(videos, emptyMap()))
+        // Com 800 LIMPO restantes após wipe NUDE → NÃO é 0
+        val db = videos.take(800).associate { it.uri to FakeResult(ClassifNudez.LIMPO, 1L) }
+        assertEquals(800, feitosCount(videos, db))
+        assertNotEquals(0, feitosCount(videos, db))
     }
 }

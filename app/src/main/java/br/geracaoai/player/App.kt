@@ -26,7 +26,8 @@ class App : Application() {
         val proc = nomeProcesso()
         Log.i(TAG, "onCreate pid=${Process.myPid()} process=$proc")
         if (proc.contains(":")) return
-        // Processo UI: retoma varredura se ficou marcada como interrompida.
+        // Processo UI: recupera chaves DB (pós v1.3.0) e retoma varredura se interrompida.
+        runCatching { OrgRecuperacao.rodarSePreciso(this) }
         runCatching { OrganizarWorker.autoRetomarSePreciso(this) }
     }
 
