@@ -314,10 +314,14 @@ fun Ajustes(voltar: () -> Unit) {
             cacheInfo = withContext(Dispatchers.IO) { "Cache ~${fmtTam(CacheLimpeza.tamanhoCache(ctx))}" }
         }
         cacheInfo?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = Cores.Suave) }
+        val escopoCache = rememberCoroutineScope()
         BotaoVidro("Limpar cache", icone = { Icon(Icons.Default.CleaningServices, null, tint = Cores.Texto) }) {
-            val freed = CacheLimpeza.limpar(ctx)
-            cacheInfo = "Cache ~${fmtTam(CacheLimpeza.tamanhoCache(ctx))}"
-            android.widget.Toast.makeText(ctx, "Liberou ${fmtTam(freed)} (análises e vídeos intactos)", android.widget.Toast.LENGTH_LONG).show()
+            // Apagar/medir em IO: cache grande não trava a UI (ANR).
+            escopoCache.launch {
+                val (freed, resto) = withContext(Dispatchers.IO) { CacheLimpeza.limpar(ctx) to CacheLimpeza.tamanhoCache(ctx) }
+                cacheInfo = "Cache ~${fmtTam(resto)}"
+                android.widget.Toast.makeText(ctx, "Liberou ${fmtTam(freed)} (análises e vídeos intactos)", android.widget.Toast.LENGTH_LONG).show()
+            }
         }
         BotaoVidro("Apagar análises salvas", icone = { Icon(Icons.Default.DeleteSweep, null, tint = Cores.Texto) }) {
             Cache.limpar(ctx); android.widget.Toast.makeText(ctx, "Análises apagadas", android.widget.Toast.LENGTH_SHORT).show() }

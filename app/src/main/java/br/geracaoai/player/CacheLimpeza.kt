@@ -17,7 +17,7 @@ object CacheLimpeza {
         t += bytes(File(ctx.filesDir, "legendas"))
         t += bytes(File(ctx.filesDir, "asr_whisper"))
         t += bytes(File(ctx.filesDir, "melhorar_tmp"))
-        t += bytes(File(ctx.cacheDir, "image_manager_disk_cache"))
+        // (image_manager_disk_cache fica dentro de cacheDir — já contado acima)
         return t
     }
 

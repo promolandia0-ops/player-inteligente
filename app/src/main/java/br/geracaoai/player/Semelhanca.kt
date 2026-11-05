@@ -113,8 +113,14 @@ object Semelhanca {
      */
     fun ordenarPorSemelhanca(videos: List<Video>, emb: Map<String, FloatArray>): List<Video> {
         if (videos.size <= 1) return videos
-        val com = videos.mapNotNull { v -> emb[v.uri.toString()]?.let { v to it } }
-        val sem = videos.filter { it.uri.toString() !in emb }.sortedByDescending { it.dataMod }
+        // DB guarda o embedding pela chave estável (…/external/…), mas o MediaStore lista
+        // …/external_primary/… no Android 10+ — sem isso a ordem caía sempre em "por data".
+        fun embDe(v: Video): FloatArray? {
+            val u = v.uri.toString()
+            return emb[VideosMedia.chaveEstavel(u)] ?: emb[u]
+        }
+        val com = videos.mapNotNull { v -> embDe(v)?.let { v to it } }
+        val sem = videos.filter { embDe(it) == null }.sortedByDescending { it.dataMod }
         if (com.isEmpty()) return videos.sortedByDescending { it.dataMod }
         // começa pelo de menor distância média (centro aproximado)
         val resto = com.toMutableList()
@@ -132,6 +138,14 @@ object Semelhanca {
         }
         out.addAll(sem)
         return out
+    }
+
+    /** Mesmo conteúdo (chaves + vetores)? Evita reordenar O(n²) a cada refresh da UI. */
+    fun mesmoConteudo(a: Map<String, FloatArray>, b: Map<String, FloatArray>): Boolean {
+        if (a === b) return true
+        if (a.size != b.size) return false
+        for ((k, v) in a) { val o = b[k] ?: return false; if (!v.contentEquals(o)) return false }
+        return true
     }
 
     private fun normalizar(v: FloatArray) {

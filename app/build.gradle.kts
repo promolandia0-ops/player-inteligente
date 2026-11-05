@@ -5,7 +5,7 @@ android {
   namespace = "br.geracaoai.player"
   compileSdk = 35
   defaultConfig {
-    applicationId = "br.geracaoai.player"; minSdk = 29; targetSdk = 35; versionCode = 20; versionName = "1.3.12"
+    applicationId = "br.geracaoai.player"; minSdk = 29; targetSdk = 35; versionCode = 21; versionName = "1.3.13"
     ndk { abiFilters += (project.findProperty("abis") as String? ?: "arm64-v8a").split(",") }
   }
   signingConfigs { create("release") { if (ks.isNotEmpty()) { storeFile = file(ks["storeFile"] as String); storePassword = ks["storePassword"] as String; keyAlias = ks["keyAlias"] as String; keyPassword = ks["keyPassword"] as String } } }

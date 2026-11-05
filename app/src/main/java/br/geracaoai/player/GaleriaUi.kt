@@ -200,7 +200,10 @@ fun Biblioteca(
     val orgTxt = orgSnap.d
     LaunchedEffect(orgPrefsTick.intValue, orgInfo?.state) {
         val (mapa, emb) = withContext(Dispatchers.IO) { db.todosPorChaveEstavel() to db.embeddings() }
-        orgMap = mapa; embMap = emb
+        // Refresh a cada 800 ms: só troca a instância se mudou (FloatArray não tem equals →
+        // senão a ordem Semelhança, O(n²), recalculava na thread da UI o tempo todo).
+        if (mapa != orgMap) orgMap = mapa
+        if (!Semelhanca.mesmoConteudo(emb, embMap)) embMap = emb
     }
 
     val pastas = remember(videos) { videos?.let { pastasDe(it) } ?: emptyList() }
@@ -309,7 +312,12 @@ fun Biblioteca(
             )
             else -> {
                 // Ajustes embutido na aba (mantém bottom bar e posição das outras abas).
-                Box(Modifier.fillMaxSize().padding(bottom = 88.dp)) { Ajustes(voltar = { aba = AbaGaleria.ALBUNS.name }) }
+                Box(Modifier.fillMaxSize().padding(bottom = 88.dp)) { Ajustes(voltar = {
+                    // Seta Voltar = mesmo comportamento do Back (aba anterior).
+                    val s = NavAbas.aoVoltar(aba, abaAnterior)
+                    aba = s.aba; abaAnterior = s.anterior
+                    if (s.aba == AbaGaleria.VIDEOS.name) ordem = OrdemPrefs.get(ctx, "__videos", Ordenacao.MAIS_NOVOS).name
+                }) }
             }
         }
 

@@ -72,6 +72,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         withContext(Dispatchers.IO) { Exclusao.esperarScanParar(ctx, 3_000L) }
 
         val mmr = MediaMetadataRetriever()
+        var concluido = false
         return@withContext try {
             mmr.setDataSource(ctx, uri)
             val dur = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
@@ -143,6 +144,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
 
             Cache.salvar(ctx, chave, Analise(dur, tempos, sc), intervalo)
             AnaliseProgresso.set(ctx, uri.toString(), 1f)
+            concluido = true
             // limpa badge depois de um tempo curto — UI trata 1f como ✓
             Log.i(TAG, "ok frames=$n dur=${dur}ms")
             Result.success(workDataOf("uri" to uri.toString()))
@@ -153,6 +155,8 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             Result.failure(workDataOf("erro" to errMsg(e)))
         } finally {
             runCatching { mmr.release() }
+            // Cancelado (notificação/Parar/novo vídeo) ou falhou: não deixa badge "x%" órfão na grade por horas.
+            if (!concluido) runCatching { AnaliseProgresso.clear(ctx, uri.toString()) }
             // Se o player já fechou, a galeria pode voltar.
             if (!Exclusao.playerEstaAberto(ctx)) Exclusao.retomarGaleriaSePreciso(ctx)
         }
