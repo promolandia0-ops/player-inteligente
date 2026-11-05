@@ -25,8 +25,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         private const val TAG = "Analise"
 
         fun iniciar(ctx: Context, uri: Uri, startMs: Long = 0L) {
-            // Prioridade absoluta: pausa/cancela galeria e medição de tamanho; não espera forever.
-            runCatching { TamanhoScanService.parar(ctx) }
+            // Prioridade absoluta: pausa/cancela galeria; não espera forever.
             runCatching { OrganizarScanService.yieldToAnalise(ctx) }
             // Badge imediato na UI (evita "0% preso" sem feedback se WorkManager demorar a subir).
             AnaliseProgresso.set(ctx, uri.toString(), 0.01f)

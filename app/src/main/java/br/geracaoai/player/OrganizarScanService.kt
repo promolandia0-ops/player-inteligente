@@ -360,7 +360,7 @@ class OrganizarScanService : Service() {
             }
             if (confirmados < OrganizarWorker.CONFIRMACOES) hits.clear()
             if (hits.isEmpty()) ClassifRes(ClassifNudez.LIMPO, emptySet())
-            else ClassifRes(ClassifNudez.NUDE, hits, 0f, 0f, 0f) // métrica de tamanho só no TamanhoScan (v2+)
+            else ClassifRes(ClassifNudez.NUDE, hits, 0f, 0f, 0f)
         } catch (oom: OutOfMemoryError) {
             Log.w(TAG, "OOM video", oom); System.gc(); ClassifRes(ClassifNudez.ERRO, emptySet())
         } catch (e: Exception) {

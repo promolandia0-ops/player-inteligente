@@ -25,10 +25,4 @@ class OrdenacaoTest {
     }
 }
 
-class TamanhoPastasTest {
-    @Test fun idsEsperados() {
-        val ids = listOf("__peituda", "__peitinho", "__rabuda", "__rabinho", "__bucetuda", "__bucetinha")
-        assertEquals(6, ids.distinct().size)
-    }
-}
 

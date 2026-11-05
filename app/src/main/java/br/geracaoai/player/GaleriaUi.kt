@@ -163,8 +163,7 @@ fun Biblioteca(
     val orgInfos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(OrganizarWorker.NOME).collectAsState(initial = emptyList())
     val orgInfo = orgInfos.firstOrNull()
     val orgPrefsTick = remember { mutableIntStateOf(0) }
-    var tamanhoProg by remember { mutableStateOf<Map<String, TamanhoProgresso.Snap>>(TamanhoProgresso.todosAtivos(ctx)) }
-    LaunchedEffect(Unit) { while (true) { delay(800); orgPrefsTick.intValue++; analiseProg = AnaliseProgresso.todosAtivos(ctx); tamanhoProg = TamanhoProgresso.todosAtivos(ctx) } }
+    LaunchedEffect(Unit) { while (true) { delay(800); orgPrefsTick.intValue++; analiseProg = AnaliseProgresso.todosAtivos(ctx) } }
     val orgSnap = remember(orgPrefsTick.intValue, orgInfo?.state, orgInfo?.progress) {
         val op = OrgPrefs(ctx)
         val feitos = orgInfo?.progress?.getInt("feitos", op.feitos) ?: op.feitos
@@ -202,37 +201,11 @@ fun Biblioteca(
             if (pend.isNotEmpty()) add(Pasta("__pend", "Não analisados", pend))
         }
     }
-    // Pastas de tamanho: métrica bruta no DB; split topo/fundo ~40% (pares disjuntos).
-    val pastasTamanho = remember(videos, orgMap) {
-        val vs = videos ?: return@remember emptyList()
-        fun res(v: Video) = orgMap[VideosMedia.chaveEstavel(v.uri.toString())] ?: orgMap[v.uri.toString()]
-        val nude = vs.filter { res(it)?.classif == ClassifNudez.NUDE }
-        // Métrica >0 já implica parte EXPOSED medida — não filtrar por cats (encolhia demais).
-        fun par(sel: (ResultadoOrg) -> Float): Pair<List<Video>, List<Video>> {
-            val scored = nude.mapNotNull { v ->
-                val r = res(v) ?: return@mapNotNull null
-                val a = sel(r); if (a <= 0f) null else v to a
-            }
-            val (g, p) = TamanhoLogica.partirPorTamanho(scored)
-            return g.map { it.first } to p.map { it.first }
-        }
-        val (peituda, peitinho) = par({ it.areaPeito })
-        val (rabuda, rabinho) = par({ it.areaBunda })
-        val (bucetuda, bucetinha) = par({ it.areaBuceta })
-        listOf(
-            Pasta("__peituda", "Peituda", peituda),
-            Pasta("__peitinho", "Peitinho", peitinho),
-            Pasta("__rabuda", "Rabuda", rabuda),
-            Pasta("__rabinho", "Rabinho", rabinho),
-            Pasta("__bucetuda", "Bucetuda", bucetuda),
-            Pasta("__bucetinha", "Bucetinha", bucetinha),
-        )
-    }
-    val pastaSel = remember(pastaId, pastas, albumsVirtuais, pastasTamanho) {
+    val pastaSel = remember(pastaId, pastas, albumsVirtuais) {
         pastaId?.let { id ->
-            pastas.find { it.id == id }
-                ?: albumsVirtuais.find { it.id == id }
-                ?: pastasTamanho.find { it.id == id }
+            // Ignora ids antigos de Por tamanho (v1.3.8) salvos no estado.
+            if (id.startsWith("__peit") || id.startsWith("__rab") || id.startsWith("__bucet")) null
+            else pastas.find { it.id == id } ?: albumsVirtuais.find { it.id == id }
         }
     }
     val ordemAtual = runCatching { Ordenacao.valueOf(ordem) }.getOrDefault(Ordenacao.MAIS_NOVOS)
@@ -288,17 +261,13 @@ fun Biblioteca(
                 gridState = scrollAlbuns, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
             )
             abaAtual == AbaGaleria.INTELIGENTE -> AbaInteligente(
-                smart = albumsVirtuais, pastasTamanho = pastasTamanho, tamanhoProg = tamanhoProg, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
+                smart = albumsVirtuais, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
                 orgRodando = orgRodando || orgPausado, orgPausado = orgPausado,
                 orgProg = orgProg, orgTxt = orgTxt, recupMsg = recupMsg,
                 onPermitir = { pedir.launch(perm) },
                 onPasta = { p ->
                     guardarScrolls(); pastaId = p.id; busca = ""
-                    val padrao = when (p.id) {
-                        "__putaria" -> Ordenacao.SEMELHANCA
-                        "__peituda", "__peitinho", "__rabuda", "__rabinho", "__bucetuda", "__bucetinha" -> Ordenacao.MAIS_NOVOS
-                        else -> Ordenacao.MAIS_NOVOS
-                    }
+                    val padrao = if (p.id == "__putaria") Ordenacao.SEMELHANCA else Ordenacao.MAIS_NOVOS
                     ordem = OrdemPrefs.get(ctx, p.id, padrao).name
                     pastaScrollIx = 0; pastaScrollOff = 0
                 },
@@ -487,14 +456,12 @@ private fun AbaAlbuns(
 
 @Composable
 private fun AbaInteligente(
-    smart: List<Pasta>, pastasTamanho: List<Pasta>, tamanhoProg: Map<String, TamanhoProgresso.Snap>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean,
+    smart: List<Pasta>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean,
     orgRodando: Boolean, orgPausado: Boolean, orgProg: Float, orgTxt: String?, recupMsg: String?,
     onPermitir: () -> Unit, onPasta: (Pasta) -> Unit,
     onOrganizar: () -> Unit, onPausarOrg: () -> Unit, onContinuarOrg: () -> Unit, onCancelarOrg: () -> Unit,
     onReanalisar: () -> Unit, gridState: LazyGridState,
 ) {
-    val ctx = LocalContext.current
-
     LazyVerticalGrid(
         columns = GridCells.Fixed(2), state = gridState,
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 100.dp),
@@ -506,7 +473,6 @@ private fun AbaInteligente(
             Column(Modifier.statusBarsPadding().padding(top = 14.dp, bottom = 6.dp)) {
                 Text("Inteligente", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold), color = Color.White)
                 Text("Álbuns por nudez · 100% offline", style = MaterialTheme.typography.labelMedium, color = Color(0x99FFFFFF))
-                Text("Em pastas vazias, toque em Analisar (só mulheres na Putaria).", style = MaterialTheme.typography.labelSmall, color = Color(0x66FFFFFF))
                 if (!recupMsg.isNullOrBlank()) {
                     Spacer(Modifier.height(8.dp))
                     Text(recupMsg, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFFB74D))
@@ -559,67 +525,6 @@ private fun AbaInteligente(
         items(smart.size, key = { smart[it].id }) { i ->
             CartaAlbumSamsung(smart[i], destaque = smart[i].id == "__putaria") { onPasta(smart[i]) }
         }
-        if (pastasTamanho.isNotEmpty() || (videos?.any { true } == true)) {
-            item(span = { GridItemSpan(2) }) {
-                val reorgSnap = tamanhoProg[TamanhoScanService.PROG_REORG]
-                val reorgAndo = reorgSnap != null && reorgSnap.frac < 0.999f
-                Column(Modifier.padding(top = 8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "Por tamanho (só Putaria)",
-                            style = MaterialTheme.typography.titleSmall, color = Color(0x99FFFFFF),
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            if (reorgAndo) "…" else "Reorganizar",
-                            Modifier
-                                .clip(RoundedCornerShape(50))
-                                .background(Cores.GradienteH)
-                                .then(
-                                    if (reorgAndo) Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                    else Modifier.toque {
-                                        TamanhoScanService.reorganizar(ctx)
-                                    }.padding(horizontal = 12.dp, vertical = 6.dp),
-                                ),
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                        )
-                    }
-                    if (reorgAndo || (reorgSnap != null && reorgSnap.txt.isNotBlank() && reorgSnap.frac >= 0.999f)) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            reorgSnap?.txt?.ifBlank { "Reorganizando…" } ?: "Reorganizando…",
-                            style = MaterialTheme.typography.labelSmall, color = Color(0xCCFFFFFF),
-                        )
-                        if (reorgAndo) {
-                            Spacer(Modifier.height(4.dp))
-                            LinearProgressIndicator(
-                                progress = { (reorgSnap?.frac ?: 0f).coerceIn(0f, 1f) },
-                                Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)),
-                                color = Cores.Magenta, trackColor = Color(0x22FFFFFF),
-                            )
-                        }
-                    }
-                    Text(
-                        "Segure um tile para reorganizar só aquele par.",
-                        style = MaterialTheme.typography.labelSmall, color = Color(0x66FFFFFF),
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
-            }
-        }
-        items(pastasTamanho.size, key = { pastasTamanho[it].id }) { i ->
-            val p = pastasTamanho[i]
-            val prog = tamanhoProg[p.id] ?: tamanhoProg[TamanhoScanService.PROG_REORG]
-            CartaTamanho(
-                p = p,
-                snap = prog,
-                onAnalisar = { TamanhoScanService.iniciar(ctx, p.id) },
-                onAbrir = { onPasta(p) },
-                onReorganizarPar = { TamanhoScanService.reorganizar(ctx, p.id) },
-            )
-        }
     }
 }
 
@@ -661,122 +566,6 @@ private fun CartaAlbumSamsung(p: Pasta, destaque: Boolean = false, onClick: () -
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Text(if (p.contagem == 1) "1 vídeo" else "${p.contagem} vídeos", color = Color(0xCCFFFFFF), fontSize = 12.sp)
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun CartaTamanho(
-    p: Pasta,
-    snap: TamanhoProgresso.Snap?,
-    onAnalisar: () -> Unit,
-    onAbrir: () -> Unit,
-    onReorganizarPar: () -> Unit = {},
-) {
-    val vazio = p.contagem == 0
-    val progresso = snap?.frac
-    val txt = snap?.txt.orEmpty()
-    val analisando = progresso != null && progresso < 0.999f
-    val msgIdle = !analisando && txt.isNotBlank() && p.contagem == 0 &&
-        (txt.startsWith("Nenhum") || txt.startsWith("Nada") || txt.startsWith("Erro") || txt.startsWith("Pastas"))
-    val hap = LocalHapticFeedback.current
-    Box(
-        Modifier.fillMaxWidth().aspectRatio(1f)
-            .then(
-                when {
-                    analisando -> Modifier
-                    !vazio -> Modifier.combinedClickable(
-                        onClick = onAbrir,
-                        onLongClick = {
-                            hap.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onReorganizarPar()
-                        },
-                    )
-                    // Tile inteiro responde ao toque quando vazio (o Text sozinho era fácil de “errar”).
-                    else -> Modifier.combinedClickable(
-                        onClick = onAnalisar,
-                        onLongClick = {
-                            hap.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onReorganizarPar()
-                        },
-                    )
-                },
-            )
-            .clip(RoundedCornerShape(18.dp)),
-    ) {
-        if (p.videos.isNotEmpty()) Thumb(p.capa.uri, Modifier.fillMaxSize(), w = 360, h = 360)
-        else Box(Modifier.fillMaxSize().background(Color(0xFF1A1A1A)))
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.verticalGradient(0.45f to Color.Transparent, 1f to Color(0xCC000000)),
-            ),
-        )
-        Column(Modifier.align(Alignment.BottomStart).padding(10.dp)) {
-            Text(
-                p.nome, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                when {
-                    analisando && txt.isNotBlank() -> txt
-                    analisando -> "${((progresso ?: 0f) * 100).toInt()}%"
-                    p.contagem == 1 -> "1 vídeo"
-                    else -> "${p.contagem} vídeos"
-                },
-                color = Color(0xCCFFFFFF), fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (vazio) {
-            Box(Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
-                if (analisando) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(
-                            progress = { (progresso ?: 0f).coerceIn(0f, 1f) },
-                            modifier = Modifier.size(36.dp),
-                            color = Cores.Magenta,
-                            trackColor = Color(0x33FFFFFF),
-                            strokeWidth = 3.dp,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            txt.ifBlank { "${((progresso ?: 0f) * 100).toInt()}%" },
-                            color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
-                            maxLines = 3,
-                        )
-                    }
-                } else if (msgIdle) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            txt,
-                            color = Color(0xCCFFFFFF), fontSize = 11.sp,
-                            maxLines = 4,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "Analisar",
-                            Modifier
-                                .clip(RoundedCornerShape(50))
-                                .background(Cores.GradienteH)
-                                .padding(horizontal = 14.dp, vertical = 8.dp),
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                        )
-                    }
-                } else {
-                    Text(
-                        "Analisar",
-                        Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(Cores.GradienteH)
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                    )
-                }
-            }
         }
     }
 }

@@ -25,9 +25,9 @@ class FeatureAuditTest {
         for (n in need) assertTrue("$n missing", labels.contains(n))
     }
 
-    @Test fun tamanhoPastasIds() {
-        val ids = listOf("__peituda", "__peitinho", "__rabuda", "__rabinho", "__bucetuda", "__bucetinha")
-        assertEquals(6, ids.distinct().size)
+    @Test fun zoomFramingExigeDuasPartes() {
+        val so = listOf(TamanhoLogica.CaixaParte(TamanhoLogica.FEET_EXPOSED, TamanhoLogica.Caixa(0.9f, 0.5f, 0.9f, 0.1f, 0.08f)))
+        assertNull(TamanhoLogica.enquadrarCorpoInteiro(so, 1080f, 1920f))
     }
 
     @Test fun semelhançaDistanciaIdenticos() {

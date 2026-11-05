@@ -81,6 +81,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.ArrayDeque
 import kotlin.math.abs
 
 data class Video(
@@ -392,8 +393,8 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var modo by remember(video.uri) { mutableStateOf(Modo.AJUSTAR) }
     var zoom by remember(video.uri) { mutableFloatStateOf(1f) }
     var pan by remember(video.uri) { mutableStateOf(Offset.Zero) }
-    val zoomAnim by animateFloatAsState(zoom, spring(stiffness = 900f), label = "z")
-    val panAnim by animateOffsetAsState(pan, spring(stiffness = 900f), label = "pn")
+    val zoomAnim by animateFloatAsState(zoom, spring(stiffness = 280f, dampingRatio = 0.86f), label = "z")
+    val panAnim by animateOffsetAsState(pan, spring(stiffness = 280f, dampingRatio = 0.86f), label = "pn")
 
     // Galeria nunca compete com o player: cede ao abrir, retoma ao sair.
     LaunchedEffect(Unit) {
@@ -449,17 +450,20 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     LaunchedEffect(zoomAuto, zoomManual, video.uri) {
         if (!zoomAuto || zoomManual) return@LaunchedEffect
         var det: Detector? = null
+        val historico = ArrayDeque<List<TamanhoLogica.CaixaParte>>(4)
+        var ultimo: TamanhoLogica.ZoomAlvo? = null
+        var semCorpo = 0
         try {
             while (true) {
-                delay(750)
+                delay(700)
                 if (!zoomAuto || zoomManual) break
-                if (AnaliseWorker.rodando(ctx) || TamanhoScanService.rodando(ctx)) continue
+                if (AnaliseWorker.rodando(ctx)) continue
                 val tv = textureView ?: continue
                 if (!tv.isAvailable) continue
                 val vw = viewCw; val vh = viewCh
                 if (vw < 8f || vh < 8f) continue
                 val bmp = runCatching { tv.getBitmap(320, 320) }.getOrNull() ?: continue
-                val boxes = withContext(Dispatchers.Default) {
+                val partes = withContext(Dispatchers.Default) {
                     try {
                         if (det == null) det = Detector(ctx, false)
                         det!!.caixasCorpo(bmp, TamanhoLogica.LIMIAR)
@@ -470,10 +474,26 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                         if (!bmp.isRecycled) bmp.recycle()
                     }
                 }
-                if (boxes.size < 1) continue
-                val alvo = TamanhoLogica.zoomPanParaSujeito(boxes, vw, vh) ?: continue
-                zoom = alvo.first
-                pan = Offset(alvo.second[0], alvo.second[1])
+                if (partes.isNotEmpty()) {
+                    historico.addLast(partes)
+                    while (historico.size > 3) historico.removeFirst()
+                    semCorpo = 0
+                } else {
+                    semCorpo++
+                    if (semCorpo >= 4) {
+                        // Nada por ~3s → volta suavemente a 1x
+                        if (zoom > 1.05f) { zoom = 1f; pan = Offset.Zero; ultimo = TamanhoLogica.ZoomAlvo(1f, 0f, 0f) }
+                        historico.clear()
+                    }
+                    continue
+                }
+                val uniao = TamanhoLogica.uniaoTemporal(historico.toList())
+                if (TamanhoLogica.classesDistintas(uniao) < 2) continue
+                val alvo = TamanhoLogica.enquadrarCorpoInteiro(uniao, vw, vh) ?: continue
+                if (!TamanhoLogica.deveAtualizarAlvo(ultimo, alvo)) continue
+                ultimo = alvo
+                zoom = alvo.zoom
+                pan = Offset(alvo.panX, alvo.panY)
             }
         } finally {
             runCatching { det?.close() }
