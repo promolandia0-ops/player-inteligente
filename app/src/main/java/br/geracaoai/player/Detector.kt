@@ -175,6 +175,50 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
         }
     }
 
+
+    /** Scores/áreas por índice NudeNet + áreas UI — para filtro feminino (Por tamanho). */
+    fun pontuarDetalhe(frame: Bitmap, limiar: Float = OrganizarWorker.LIMIAR): TamanhoLogica.Evidencia {
+        preparar(frame)
+        OnnxTensor.createTensor(env, buf, longArrayOf(1, 3, S.toLong(), S.toLong())).use { tensor ->
+            sessao.run(mapOf(sessao.inputNames.first() to tensor)).use { r ->
+                val out = (r[0] as OnnxTensor)
+                val a = out.info.shape[2].toInt()
+                val fb = out.floatBuffer
+                fun maxClasseEArea(idx: Int): Pair<Float, Float> {
+                    val base = (4 + idx) * a
+                    var m = 0f; var area = 0f
+                    for (i in 0 until a) {
+                        val v = fb.get(base + i)
+                        if (v >= m) {
+                            m = v
+                            val w = fb.get(2 * a + i).coerceAtLeast(0f)
+                            val h = fb.get(3 * a + i).coerceAtLeast(0f)
+                            area = ((w * h) / (S * S).toFloat()).coerceIn(0f, 1f)
+                        }
+                    }
+                    return m to area
+                }
+                okRodou()
+                fun sc(i: Int) = maxClasseEArea(i)
+                val (fbSc, fbAr) = sc(TamanhoLogica.FEMALE_BREAST_EXPOSED)
+                val (fgSc, fgAr) = sc(TamanhoLogica.FEMALE_GENITALIA_EXPOSED)
+                val (buSc, buAr) = sc(TamanhoLogica.BUTTOCKS_EXPOSED)
+                return TamanhoLogica.Evidencia(
+                    faceFemale = sc(TamanhoLogica.FACE_FEMALE).first,
+                    faceMale = sc(TamanhoLogica.FACE_MALE).first,
+                    maleGen = sc(TamanhoLogica.MALE_GENITALIA_EXPOSED).first,
+                    maleBreast = sc(TamanhoLogica.MALE_BREAST_EXPOSED).first,
+                    femaleBreast = fbSc,
+                    femaleGen = fgSc,
+                    buttocks = buSc,
+                    areaPeito = if (fbSc >= limiar) fbAr else 0f,
+                    areaBunda = if (buSc >= limiar) buAr else 0f,
+                    areaBuceta = if (fgSc >= limiar) fgAr else 0f,
+                )
+            }
+        }
+    }
+
     private fun okRodou() { if (guardAtivo) { guard.delete(); guardAtivo = false } }
 
     private fun preparar(frame: Bitmap) {

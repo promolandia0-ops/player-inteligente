@@ -52,3 +52,31 @@ object AnaliseProgresso {
         return out
     }
 }
+
+
+object TamanhoProgresso {
+    private fun p(ctx: Context) = ctx.getSharedPreferences("tamanho_prog", Context.MODE_PRIVATE)
+    fun set(ctx: Context, alvoId: String, frac: Float) {
+        p(ctx).edit().putFloat("p:$alvoId", frac).putLong("t:$alvoId", System.currentTimeMillis()).apply()
+    }
+    fun clear(ctx: Context, alvoId: String) {
+        p(ctx).edit().remove("p:$alvoId").remove("t:$alvoId").apply()
+    }
+    fun get(ctx: Context, alvoId: String): Float? {
+        val sp = p(ctx)
+        if (!sp.contains("p:$alvoId")) return null
+        val t = sp.getLong("t:$alvoId", 0L)
+        if (System.currentTimeMillis() - t > 6 * 3600_000L) return null
+        return sp.getFloat("p:$alvoId", 0f)
+    }
+    fun todosAtivos(ctx: Context): Map<String, Float> {
+        val sp = p(ctx)
+        val out = HashMap<String, Float>()
+        for (k in sp.all.keys) {
+            if (!k.startsWith("p:")) continue
+            val id = k.removePrefix("p:")
+            get(ctx, id)?.let { out[id] = it }
+        }
+        return out
+    }
+}

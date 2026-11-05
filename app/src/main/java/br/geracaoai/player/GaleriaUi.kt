@@ -158,7 +158,8 @@ fun Biblioteca(
     val orgInfos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(OrganizarWorker.NOME).collectAsState(initial = emptyList())
     val orgInfo = orgInfos.firstOrNull()
     val orgPrefsTick = remember { mutableIntStateOf(0) }
-    LaunchedEffect(Unit) { while (true) { delay(800); orgPrefsTick.intValue++; analiseProg = AnaliseProgresso.todosAtivos(ctx) } }
+    var tamanhoProg by remember { mutableStateOf(TamanhoProgresso.todosAtivos(ctx)) }
+    LaunchedEffect(Unit) { while (true) { delay(800); orgPrefsTick.intValue++; analiseProg = AnaliseProgresso.todosAtivos(ctx); tamanhoProg = TamanhoProgresso.todosAtivos(ctx) } }
     val orgSnap = remember(orgPrefsTick.intValue, orgInfo?.state, orgInfo?.progress) {
         val op = OrgPrefs(ctx)
         val feitos = orgInfo?.progress?.getInt("feitos", op.feitos) ?: op.feitos
@@ -219,8 +220,12 @@ fun Biblioteca(
             pasta("__bucetinha", "Bucetinha", { it.areaBuceta }, true),
         )
     }
-    val pastaSel = remember(pastaId, pastas, albumsVirtuais) {
-        pastaId?.let { id -> pastas.find { it.id == id } ?: albumsVirtuais.find { it.id == id } }
+    val pastaSel = remember(pastaId, pastas, albumsVirtuais, pastasTamanho) {
+        pastaId?.let { id ->
+            pastas.find { it.id == id }
+                ?: albumsVirtuais.find { it.id == id }
+                ?: pastasTamanho.find { it.id == id }
+        }
     }
     val ordemAtual = runCatching { Ordenacao.valueOf(ordem) }.getOrDefault(Ordenacao.MAIS_NOVOS)
 
@@ -266,7 +271,7 @@ fun Biblioteca(
                 gridState = scrollAlbuns, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
             )
             abaAtual == AbaGaleria.INTELIGENTE -> AbaInteligente(
-                smart = albumsVirtuais, pastasTamanho = pastasTamanho, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
+                smart = albumsVirtuais, pastasTamanho = pastasTamanho, tamanhoProg = tamanhoProg, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
                 orgRodando = orgRodando || orgPausado, orgPausado = orgPausado,
                 orgProg = orgProg, orgTxt = orgTxt, recupMsg = recupMsg,
                 onPermitir = { pedir.launch(perm) },
@@ -427,7 +432,7 @@ private fun AbaAlbuns(
 
 @Composable
 private fun AbaInteligente(
-    smart: List<Pasta>, pastasTamanho: List<Pasta>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean,
+    smart: List<Pasta>, pastasTamanho: List<Pasta>, tamanhoProg: Map<String, Float>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean,
     orgRodando: Boolean, orgPausado: Boolean, orgProg: Float, orgTxt: String?, recupMsg: String?,
     onPermitir: () -> Unit, onPasta: (Pasta) -> Unit,
     onOrganizar: () -> Unit, onPausarOrg: () -> Unit, onContinuarOrg: () -> Unit, onCancelarOrg: () -> Unit,
@@ -446,7 +451,7 @@ private fun AbaInteligente(
             Column(Modifier.statusBarsPadding().padding(top = 14.dp, bottom = 6.dp)) {
                 Text("Inteligente", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold), color = Color.White)
                 Text("Álbuns por nudez · 100% offline", style = MaterialTheme.typography.labelMedium, color = Color(0x99FFFFFF))
-                Text("Toque em Peituda/Rabuda/Bucetuda para medir só a Putaria (não rescaneia a galeria).", style = MaterialTheme.typography.labelSmall, color = Color(0x66FFFFFF))
+                Text("Em pastas vazias, toque em Analisar (só mulheres na Putaria).", style = MaterialTheme.typography.labelSmall, color = Color(0x66FFFFFF))
                 if (!recupMsg.isNullOrBlank()) {
                     Spacer(Modifier.height(8.dp))
                     Text(recupMsg, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFFB74D))
@@ -507,11 +512,13 @@ private fun AbaInteligente(
         }
         items(pastasTamanho.size, key = { pastasTamanho[it].id }) { i ->
             val p = pastasTamanho[i]
-            CartaAlbumSamsung(p, destaque = false) {
-                // Sempre dispara job (resumível); abre pasta (pode estar vazia no início)
-                TamanhoScanService.iniciar(ctx, p.id)
-                onPasta(p)
-            }
+            val prog = tamanhoProg[p.id]
+            CartaTamanho(
+                p = p,
+                progresso = prog,
+                onAnalisar = { TamanhoScanService.iniciar(ctx, p.id) },
+                onAbrir = { onPasta(p) },
+            )
         }
     }
 }
@@ -554,6 +561,72 @@ private fun CartaAlbumSamsung(p: Pasta, destaque: Boolean = false, onClick: () -
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Text(if (p.contagem == 1) "1 vídeo" else "${p.contagem} vídeos", color = Color(0xCCFFFFFF), fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun CartaTamanho(
+    p: Pasta,
+    progresso: Float?,
+    onAnalisar: () -> Unit,
+    onAbrir: () -> Unit,
+) {
+    val vazio = p.contagem == 0
+    val analisando = progresso != null && progresso < 0.999f
+    Box(
+        Modifier.fillMaxWidth().aspectRatio(1f)
+            .then(if (!vazio) Modifier.toque(onClick = onAbrir) else Modifier)
+            .clip(RoundedCornerShape(18.dp)),
+    ) {
+        if (p.videos.isNotEmpty()) Thumb(p.capa.uri, Modifier.fillMaxSize(), w = 360, h = 360)
+        else Box(Modifier.fillMaxSize().background(Color(0xFF1A1A1A)))
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(0.45f to Color.Transparent, 1f to Color(0xCC000000)),
+            ),
+        )
+        Column(Modifier.align(Alignment.BottomStart).padding(10.dp)) {
+            Text(
+                p.nome, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                when {
+                    analisando -> "${(progresso!! * 100).toInt()}%"
+                    p.contagem == 1 -> "1 vídeo"
+                    else -> "${p.contagem} vídeos"
+                },
+                color = Color(0xCCFFFFFF), fontSize = 12.sp,
+            )
+        }
+        if (vazio) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                if (analisando) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(
+                            progress = { (progresso ?: 0f).coerceIn(0f, 1f) },
+                            modifier = Modifier.size(36.dp),
+                            color = Cores.Magenta,
+                            trackColor = Color(0x33FFFFFF),
+                            strokeWidth = 3.dp,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text("${((progresso ?: 0f) * 100).toInt()}%", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                } else {
+                    Text(
+                        "Analisar",
+                        Modifier.toque(onClick = onAnalisar)
+                            .clip(RoundedCornerShape(50))
+                            .background(Cores.GradienteH)
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                    )
+                }
+            }
         }
     }
 }
