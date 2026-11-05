@@ -433,6 +433,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         onDispose {
             val d = player.duration.coerceAtLeast(0L)
             PosicaoPrefs.salvar(ctx, chavePos, player.currentPosition, if (d > 0) d else video.duracao)
+            PosicaoPrefs.marcarAlterado()
             player.removeListener(l)
             runCatching { player.stop() }
             runCatching { player.clearMediaItems() }

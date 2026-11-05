@@ -74,6 +74,7 @@ class OrganizarScanService : Service() {
     private val pauseFlag = AtomicBoolean(false)
     private val stopFlag = AtomicBoolean(false)
     private val travado = AtomicBoolean(false)
+    @Volatile private var semFg = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -83,6 +84,12 @@ class OrganizarScanService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CANAL, "Organizar galeria", NotificationManager.IMPORTANCE_LOW))
         val n = notif(0, "Preparando")
+        // Android 12+/14+/15: o sistema pode negar o FGS (reinício START_STICKY em background,
+        // limite de 6 h do dataSync esgotado). Sem try/catch isso derrubava o processo :scan.
+        semFg = !promoverFg(n)
+    }
+
+    private fun promoverFg(n: android.app.Notification): Boolean = try {
         if (android.os.Build.VERSION.SDK_INT >= 35) {
             startForeground(
                 NOTIF_ID, n,
@@ -91,15 +98,29 @@ class OrganizarScanService : Service() {
         } else {
             startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         }
+        true
+    } catch (e: Throwable) {
+        Log.w(TAG, "startForeground negado — varredura retoma depois", e)
+        false
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (semFg) {
+            // Não roda sem FGS: ativo continua true → Worker/abrir o app retoma depois.
+            if (intent?.action == ACTION_STOP) { OrganizarWorker.setPausado(this, false); OrgPrefs(this).apply { ativo = false; pausado = false } }
+            if (intent?.action == ACTION_PAUSE) { OrganizarWorker.setPausado(this, true); OrgPrefs(this).pausado = true }
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_PAUSE -> {
                 pauseFlag.set(true)
                 OrganizarWorker.setPausado(this, true)
                 OrgPrefs(this).pausado = true
                 Log.i(TAG, "pausado")
+                // Sem varredura rodando (ex.: cedendo ao player/análise), o serviço só subiu p/ pausar:
+                // encerra em vez de ficar preso com a notificação "Preparando".
+                if (job == null || job!!.isDone) stopSelf(startId)
             }
             ACTION_STOP -> {
                 stopFlag.set(true)

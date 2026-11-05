@@ -712,7 +712,8 @@ private fun TileVideoDenso(
     v: Video, sts: SharedTransitionScope, avs: AnimatedVisibilityScope, nude: Boolean, prog: Float? = null, onClick: () -> Unit,
 ) {
     val ctxTile = LocalContext.current
-    val fracPos = remember(v.uri, v.duracao) {
+    val posVersao = PosicaoPrefs.versao.intValue
+    val fracPos = remember(v.uri, v.duracao, posVersao) {
         PosicaoPrefs.fracao(ctxTile, VideosMedia.chaveEstavel(v.uri.toString()), v.duracao)
     }
     with(sts) {

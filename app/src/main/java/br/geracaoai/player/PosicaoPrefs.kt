@@ -7,6 +7,10 @@ object PosicaoPrefs {
     private const val MIN_MS = 5_000L
     private const val FIM_MS = 5_000L
 
+    /** Muda quando o player fecha → miniaturas recalculam a barrinha de "continuar". */
+    val versao = androidx.compose.runtime.mutableIntStateOf(0)
+    fun marcarAlterado() { versao.intValue++ }
+
     private fun p(ctx: Context) = ctx.getSharedPreferences("posicao_video", Context.MODE_PRIVATE)
 
     fun salvar(ctx: Context, chave: String, posMs: Long, durMs: Long) {
