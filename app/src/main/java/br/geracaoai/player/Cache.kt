@@ -47,8 +47,8 @@ object Cache {
             if (!o.has(c.name)) FloatArray(0)
             else { val a = o.getJSONArray(c.name); FloatArray(a.length()) { a.getInt(it) / 1000f } }
         }.filterValues { it.isNotEmpty() }.let { m ->
-            // garante todas as cats alinhadas ao tamanho de tempos
-            val n = o.getJSONArray("tempos").length()
+            // chave JSON é "t" (não "tempos") — bug v1.3.0 fazia carregar() sempre falhar → Analisar preso/sem resultado
+            val n = tempos.size
             Categoria.entries.associateWith { c -> m[c]?.let { if (it.size == n) it else FloatArray(n) } ?: FloatArray(n) }
         }
         Analise(o.getLong("duracao"), tempos, sc, o.optBoolean("parcial", false)) to o.getLong("intervalo")

@@ -25,15 +25,22 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         private const val TAG = "Analise"
 
         fun iniciar(ctx: Context, uri: Uri, startMs: Long = 0L) {
-            // Cede a galeria sem bloquear: o worker espera no máx. 3 s.
+            // Prioridade absoluta: pausa/cancela galeria e medição de tamanho; não espera forever.
+            runCatching { TamanhoScanService.parar(ctx) }
             runCatching { OrganizarScanService.yieldToAnalise(ctx) }
+            // Badge imediato na UI (evita "0% preso" sem feedback se WorkManager demorar a subir).
+            AnaliseProgresso.set(ctx, uri.toString(), 0.01f)
             val req = OneTimeWorkRequestBuilder<AnaliseWorker>()
                 .setInputData(workDataOf("uri" to uri.toString(), "startMs" to startMs))
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST).build()
             WorkManager.getInstance(ctx).enqueueUniqueWork(NOME, ExistingWorkPolicy.REPLACE, req)
         }
 
-        fun cancelar(ctx: Context) = WorkManager.getInstance(ctx).cancelUniqueWork(NOME)
+        fun cancelar(ctx: Context) {
+            WorkManager.getInstance(ctx).cancelUniqueWork(NOME)
+            // limpa badges de progresso órfãos
+            AnaliseProgresso.todosAtivos(ctx).keys.forEach { AnaliseProgresso.clear(ctx, it) }
+        }
 
         fun rodando(ctx: Context): Boolean = try {
             WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(NOME).get()
@@ -57,6 +64,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         runCatching { setForeground(fg(0, "Preparando")) }
 
         val uri = Uri.parse(inputData.getString("uri") ?: return@withContext Result.failure())
+        AnaliseProgresso.set(applicationContext, uri.toString(), 0.02f)
         val startMs = inputData.getLong("startMs", 0L).coerceAtLeast(0L)
         val prefs = Prefs(ctx)
         val intervalo = 1000L / prefs.fps.coerceIn(1, 4)
@@ -149,5 +157,35 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             // Se o player já fechou, a galeria pode voltar.
             if (!Exclusao.playerEstaAberto(ctx)) Exclusao.retomarGaleriaSePreciso(ctx)
         }
+    }
+}
+
+
+/**
+ * Núcleo testável da análise por vídeo (mesmo fluxo da v1.1.3 / v1.0.0):
+ * pontua quadro a quadro, reporta progresso e monta o mapa de scores.
+ */
+object AnaliseMotor {
+    fun processar(
+        n: Int,
+        pontuar: (indice: Int) -> Map<Categoria, Float>,
+        onProgresso: (frac: Float) -> Unit,
+        parado: () -> Boolean = { false },
+    ): Map<Categoria, FloatArray> {
+        require(n > 0)
+        val sc = Categoria.entries.associateWith { FloatArray(n) }.toMutableMap()
+        var last = -1
+        for (i in 0 until n) {
+            if (parado()) break
+            pontuar(i).forEach { (c, v) -> sc[c]!![i] = v }
+            if (i % 4 == 0 || i == n - 1) {
+                val frac = (i + 1).toFloat() / n
+                if ((frac * 100).toInt() != last) {
+                    last = (frac * 100).toInt()
+                    onProgresso(frac)
+                }
+            }
+        }
+        return sc
     }
 }

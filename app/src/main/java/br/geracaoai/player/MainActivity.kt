@@ -485,17 +485,32 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
 
     val infos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(AnaliseWorker.NOME).collectAsState(initial = emptyList())
     val info = infos.firstOrNull()
-    val rodando = info?.state == WorkInfo.State.RUNNING || info?.state == WorkInfo.State.ENQUEUED
+    val rodandoWm = info?.state == WorkInfo.State.RUNNING || info?.state == WorkInfo.State.ENQUEUED
     val uriInfo = info?.progress?.getString("uri") ?: info?.outputData?.getString("uri")
-    val desteVideo = uriInfo == video.uri.toString() || (rodando && uriInfo == null)
-    val prog = info?.progress?.getFloat("p", 0f) ?: 0f
-    LaunchedEffect((prog * 20).toInt(), info?.state) {
-        if (desteVideo && (rodando || info?.state == WorkInfo.State.SUCCEEDED || info?.state == WorkInfo.State.CANCELLED || info?.state == WorkInfo.State.FAILED)) {
+    val uriStr = video.uri.toString()
+    val desteVideo = uriInfo == uriStr || (rodandoWm && uriInfo == null)
+    // Fallback: AnaliseProgresso (prefs) — cobre gap antes do 1º setProgress do WorkManager.
+    var progPrefs by remember(video.uri) { mutableFloatStateOf(AnaliseProgresso.get(ctx, uriStr) ?: 0f) }
+    LaunchedEffect(video.uri, rodandoWm, info?.state) {
+        while (true) {
+            progPrefs = AnaliseProgresso.get(ctx, uriStr) ?: 0f
+            val st = info?.state; if (!rodandoWm && (st == null || st.isFinished)) break
+            delay(400)
+        }
+    }
+    val rodando = (rodandoWm && desteVideo) || (progPrefs in 0.001f..0.999f)
+    val progWm = info?.progress?.getFloat("p", 0f) ?: 0f
+    val prog = maxOf(progWm, if (desteVideo || progPrefs > 0f) progPrefs else 0f)
+    LaunchedEffect((prog * 20).toInt(), info?.state, rodando) {
+        if ((desteVideo || rodando) && (rodando || info?.state == WorkInfo.State.SUCCEEDED || info?.state == WorkInfo.State.CANCELLED || info?.state == WorkInfo.State.FAILED || progPrefs >= 1f)) {
             val novo = withContext(Dispatchers.IO) { runCatching { Cache.carregar(ctx, chave) }.getOrNull() }
             if (novo != null) analise = novo
-            if (info?.state == WorkInfo.State.SUCCEEDED) hap.performHapticFeedback(HapticFeedbackType.LongPress)
+            if (info?.state == WorkInfo.State.SUCCEEDED || progPrefs >= 1f) {
+                hap.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (progPrefs >= 1f) AnaliseProgresso.clear(ctx, uriStr)
+            }
             if (info?.state == WorkInfo.State.FAILED) {
-                val erro = info?.outputData?.getString("erro") ?: "erro"
+                val erro = info.outputData.getString("erro") ?: "erro"
                 android.widget.Toast.makeText(ctx, "Não deu para analisar: $erro. Veja Ajustes › Ver último erro.", android.widget.Toast.LENGTH_LONG).show()
             }
         }
