@@ -10,7 +10,7 @@ enum class ClassifNudez { NUDE, LIMPO, PENDENTE, ERRO }
 data class ResultadoOrg(val uri: String, val classif: ClassifNudez, val cats: Set<Categoria>, val mtime: Long)
 
 /** DB local de álbuns virtuais — não move/copia arquivos. Persistência por vídeo. */
-class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeria_org.db", null, 2) {
+class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeria_org.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE IF NOT EXISTS org(
@@ -18,7 +18,8 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
               classif TEXT NOT NULL,
               cats TEXT NOT NULL DEFAULT '',
               mtime INTEGER NOT NULL DEFAULT 0,
-              scanned_at INTEGER NOT NULL DEFAULT 0
+              scanned_at INTEGER NOT NULL DEFAULT 0,
+              emb BLOB
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_org_classif ON org(classif)")
@@ -29,6 +30,7 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
     }
     override fun onUpgrade(db: SQLiteDatabase, o: Int, n: Int) {
         if (o < 2) db.execSQL("CREATE INDEX IF NOT EXISTS idx_org_classif ON org(classif)")
+        if (o < 3) runCatching { db.execSQL("ALTER TABLE org ADD COLUMN emb BLOB") }
     }
 
     fun salvar(uri: String, classif: ClassifNudez, cats: Set<Categoria>, mtime: Long) {
@@ -94,6 +96,24 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
     fun limpar() { writableDatabase.delete("org", null, null) }
     /** Força reclassificar só os marcados como Putaria (regras mais rígidas na v1.1.2). */
     fun limparNude() { writableDatabase.delete("org", "classif=?", arrayOf("NUDE")) }
+
+    fun salvarEmb(uri: String, emb: FloatArray) {
+        writableDatabase.update("org", ContentValues().apply { put("emb", Semelhanca.pack(emb)) }, "uri=?", arrayOf(uri))
+    }
+
+    fun embeddings(): Map<String, FloatArray> {
+        val m = HashMap<String, FloatArray>()
+        readableDatabase.rawQuery("SELECT uri,emb FROM org WHERE emb IS NOT NULL", null).use { c ->
+            while (c.moveToNext()) {
+                val v = Semelhanca.unpack(c.getBlob(1)) ?: continue
+                m[c.getString(0)] = v
+            }
+        }
+        return m
+    }
+
+    fun temEmb(uri: String): Boolean =
+        readableDatabase.rawQuery("SELECT 1 FROM org WHERE uri=? AND emb IS NOT NULL", arrayOf(uri)).use { it.moveToFirst() }
 
     private fun ler(c: android.database.Cursor) = ResultadoOrg(
         c.getString(0),

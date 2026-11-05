@@ -199,7 +199,17 @@ class OrganizarScanService : Service() {
                     }
                     val key = v.uri.toString()
                     val ant = feitosMap[key]
-                    if (ant != null && ant == v.dataMod) continue
+                    if (ant != null && ant == v.dataMod) {
+                        // Já classificado: só completa embedding se faltar (passagem leve, 1 vídeo por vez).
+                        if (!db.temEmb(key) && !stopFlag.get() && !pauseFlag.get()
+                            && !Exclusao.playerEstaAberto(ctx) && !analiseRodando(ctx)
+                        ) {
+                            runCatching {
+                                Semelhanca.extrairDeVideo(ctx, v.uri)?.let { db.salvarEmb(key, it) }
+                            }
+                        }
+                        continue
+                    }
 
                     val (classif, cats) = classificarComTimeout(ctx, v, det)
                     try {
@@ -208,6 +218,12 @@ class OrganizarScanService : Service() {
                         Log.e(TAG, "OOM salvar", oom)
                         runCatching { db.salvar(key, ClassifNudez.ERRO, emptySet(), v.dataMod) }
                         System.gc()
+                    }
+                    // Embedding de semelhança (histograma) — após classificar, sequencial, sem mexer no Detector.
+                    if (classif != ClassifNudez.ERRO && !stopFlag.get() && !Exclusao.playerEstaAberto(ctx)) {
+                        runCatching {
+                            Semelhanca.extrairDeVideo(ctx, v.uri)?.let { db.salvarEmb(key, it) }
+                        }
                     }
                     feitosMap[key] = v.dataMod
                     feitos++
