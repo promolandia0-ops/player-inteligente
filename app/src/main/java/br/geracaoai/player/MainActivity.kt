@@ -362,6 +362,9 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var textureView by remember { mutableStateOf<TextureView?>(null) }
     var viewCw by remember { mutableFloatStateOf(0f) }
     var viewCh by remember { mutableFloatStateOf(0f) }
+    // Tamanho da view do vídeo (≠ container no modo Ajustar: tarja preta em cima/baixo).
+    var vidW by remember { mutableFloatStateOf(0f) }
+    var vidH by remember { mutableFloatStateOf(0f) }
     val mediaUri = video.uri
 
     val chave = remember(video.uri) { Cache.chave(ctx, video.uri) }
@@ -460,8 +463,9 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                 if (AnaliseWorker.rodando(ctx)) continue
                 val tv = textureView ?: continue
                 if (!tv.isAvailable) continue
-                val vw = viewCw; val vh = viewCh
-                if (vw < 8f || vh < 8f) continue
+                val cw = viewCw; val ch = viewCh
+                val vw = vidW; val vh = vidH
+                if (vw < 8f || vh < 8f || cw < 8f || ch < 8f) continue
                 val bmp = runCatching { tv.getBitmap(320, 320) }.getOrNull() ?: continue
                 val partes = withContext(Dispatchers.Default) {
                     try {
@@ -489,7 +493,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                 }
                 val uniao = TamanhoLogica.uniaoTemporal(historico.toList())
                 if (TamanhoLogica.classesDistintas(uniao) < 2) continue
-                val alvo = TamanhoLogica.enquadrarCorpoInteiro(uniao, vw, vh) ?: continue
+                val alvo = TamanhoLogica.enquadrarCorpoInteiro(uniao, vw, vh, contW = cw, contH = ch) ?: continue
                 if (!TamanhoLogica.deveAtualizarAlvo(ultimo, alvo)) continue
                 ultimo = alvo
                 zoom = alvo.zoom
@@ -574,9 +578,9 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black).clipToBounds()) {
         val d = LocalDensity.current
         val cw = with(d) { maxWidth.toPx() }; val ch = with(d) { maxHeight.toPx() }
-        SideEffect { viewCw = cw; viewCh = ch }
         val vw = vsize.width * (if (vsize.pixelWidthHeightRatio > 0) vsize.pixelWidthHeightRatio else 1f); val vh = vsize.height.toFloat()
         val (w, h) = tamanhoVideo(modo, cw, ch, vw, vh)
+        SideEffect { viewCw = cw; viewCh = ch; vidW = w; vidH = h }
         val wDp by animateDpAsState(with(d) { w.toDp() }, spring(stiffness = 500f), label = "w")
         val hDp by animateDpAsState(with(d) { h.toDp() }, spring(stiffness = 500f), label = "h")
         val videoMod = Modifier.align(Alignment.Center).requiredSize(wDp, hDp)

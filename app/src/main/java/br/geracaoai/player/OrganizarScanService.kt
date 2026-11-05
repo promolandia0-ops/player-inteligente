@@ -133,6 +133,19 @@ class OrganizarScanService : Service() {
         return START_STICKY
     }
 
+    /**
+     * Android 15+: dataSync/mediaProcessing têm limite de 6 h/24 h em background. Sem parar
+     * em poucos segundos o sistema derruba o app (RemoteServiceException). Para a varredura
+     * e deixa ativo=true — ela retoma quando o app for aberto de novo.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(TAG, "timeout FGS tipo=$fgsType — parando varredura")
+        stopFlag.set(true)
+        job?.cancel(true)
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        stopSelf()
+    }
+
     override fun onDestroy() {
         stopFlag.set(true)
         job?.cancel(true)

@@ -46,6 +46,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class AbaGaleria(val rotulo: String, val icone: ImageVector) {
@@ -125,6 +126,7 @@ fun Biblioteca(
     val scrollAlbuns = rememberLazyGridState()
     val scrollIntel = rememberLazyGridState()
     val scrollPasta = rememberLazyGridState()
+    val escopo = rememberCoroutineScope()
     var pastaScrollIx by rememberSaveable { mutableIntStateOf(0) }
     var pastaScrollOff by rememberSaveable { mutableIntStateOf(0) }
     var videosScrollIx by rememberSaveable { mutableIntStateOf(0) }
@@ -242,6 +244,8 @@ fun Biblioteca(
         val s = NavAbas.aoVoltar(aba, abaAnterior)
         aba = s.aba
         abaAnterior = s.anterior
+        // Volta pra Vídeos: restaura a ordem escolhida lá (não herda a ordem da última pasta).
+        if (s.aba == AbaGaleria.VIDEOS.name) ordem = OrdemPrefs.get(ctx, "__videos", Ordenacao.MAIS_NOVOS).name
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -274,6 +278,8 @@ fun Biblioteca(
                     guardarScrolls(); pastaId = p.id; busca = ""
                     ordem = OrdemPrefs.get(ctx, p.id, Ordenacao.MAIS_NOVOS).name
                     pastaScrollIx = 0; pastaScrollOff = 0
+                    // Grid da pasta é compartilhado: pasta nova abre no topo (não na rolagem da anterior).
+                    escopo.launch { runCatching { scrollPasta.scrollToItem(0) } }
                 },
                 cols = colsAlbuns, onCols = { colsAlbuns = it.coerceIn(2, 4) },
                 gridState = scrollAlbuns, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
@@ -288,6 +294,8 @@ fun Biblioteca(
                     val padrao = if (p.id == "__putaria") Ordenacao.SEMELHANCA else Ordenacao.MAIS_NOVOS
                     ordem = OrdemPrefs.get(ctx, p.id, padrao).name
                     pastaScrollIx = 0; pastaScrollOff = 0
+                    // Grid da pasta é compartilhado: pasta nova abre no topo (não na rolagem da anterior).
+                    escopo.launch { runCatching { scrollPasta.scrollToItem(0) } }
                 },
                 onOrganizar = { organizar() },
                 onPausarOrg = { OrganizarWorker.pausar(ctx) },

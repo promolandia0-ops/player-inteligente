@@ -107,12 +107,17 @@ object TamanhoLogica {
     }
 
     /**
-     * Zoom FIT: o retângulo padded inteiro cabe na viewport (nunca corta).
+     * Zoom FIT: o retângulo padded inteiro cabe na tela (nunca corta).
      * Só amplia se a caixa padded ocupar < [minBoxFrac] do maior lado.
      * Clamp 1x–[maxZoom].
      *
-     * Mapeamento (graphicsLayer scale no centro + translation):
-     *   screenX = (nx - 0.5) * viewW * z + panX + viewW/2
+     * [viewW]/[viewH] = tamanho da view do vídeo (onde as coords normalizadas vivem);
+     * [contW]/[contH] = área visível (container). No modo Ajustar o vídeo é menor que o
+     * container (tarja preta) — usar o container no lugar da view errava o pan vertical
+     * e cortava cabeça/pés.
+     *
+     * Mapeamento (graphicsLayer scale no centro da view + translation; view centrada no container):
+     *   screenX = (nx - 0.5) * viewW * z + panX + contW/2
      */
     fun enquadrarCorpoInteiro(
         partes: List<CaixaParte>,
@@ -122,29 +127,29 @@ object TamanhoLogica {
         maxZoom: Float = 2.5f,
         minBoxFrac: Float = 0.60f,
         minPartesDistintas: Int = 2,
+        contW: Float = viewW,
+        contH: Float = viewH,
     ): ZoomAlvo? {
-        if (viewW < 8f || viewH < 8f) return null
+        if (viewW < 8f || viewH < 8f || contW < 8f || contH < 8f) return null
         if (classesDistintas(partes) < minPartesDistintas) return null
         val box = caixaCorpoPadded(partes, padding) ?: return null
         val frac = maxOf(box.w, box.h)
         // Já ocupa boa parte do quadro → não amplia (volta a 1x).
         if (frac >= minBoxFrac) return ZoomAlvo(1f, 0f, 0f)
-        // Fit: região visível = 1/z do conteúdo; precisa box.w <= 1/z e box.h <= 1/z.
-        val zFit = minOf(1f / box.w, 1f / box.h)
+        // Fit: o box ampliado precisa caber no container.
+        val zFit = minOf(contW / (box.w * viewW), contH / (box.h * viewH))
         val z = zFit.coerceIn(1f, maxZoom)
-        // Com z limitado por maxZoom, se ainda não cabe, não amplie além do fit seguro.
-        val zSafe = minOf(z, 1f / box.w, 1f / box.h).coerceAtLeast(1f).coerceAtMost(maxZoom)
-        var panX = (0.5f - box.cx) * viewW * zSafe
-        var panY = (0.5f - box.cy) * viewH * zSafe
-        val mx = (zSafe - 1f) * viewW / 2f
-        val my = (zSafe - 1f) * viewH / 2f
-        panX = panX.coerceIn(-mx, mx)
-        panY = panY.coerceIn(-my, my)
         // Ajuste fino: se algum canto sair, reduz zoom (nunca cortar).
-        return garantirDentro(box, viewW, viewH, zSafe, panX, panY, maxZoom)
+        return garantirDentro(box, viewW, viewH, z, 0f, 0f, maxZoom, contW, contH)
     }
 
-    /** Garante que os 4 cantos do box fiquem dentro de [0,viewW]×[0,viewH]. */
+    /** Pan que centraliza o box, limitado para não mostrar além da borda do vídeo. */
+    private fun panCentrado(c: Float, view: Float, cont: Float, z: Float): Float {
+        val m = ((view * z - cont) / 2f).coerceAtLeast(0f)
+        return ((0.5f - c) * view * z).coerceIn(-m, m)
+    }
+
+    /** Garante que os 4 cantos do box fiquem dentro do container [contW]×[contH]. */
     fun garantirDentro(
         box: RectN,
         viewW: Float,
@@ -153,36 +158,28 @@ object TamanhoLogica {
         panX: Float,
         panY: Float,
         maxZoom: Float,
+        contW: Float = viewW,
+        contH: Float = viewH,
     ): ZoomAlvo {
         var z = zoom.coerceIn(1f, maxZoom)
-        var px = panX
-        var py = panY
         fun cornersOk(zz: Float, ppx: Float, ppy: Float): Boolean {
             for (nx in floatArrayOf(box.x0, box.x1)) {
                 for (ny in floatArrayOf(box.y0, box.y1)) {
-                    val sx = (nx - 0.5f) * viewW * zz + ppx + viewW / 2f
-                    val sy = (ny - 0.5f) * viewH * zz + ppy + viewH / 2f
-                    if (sx < -1f || sx > viewW + 1f || sy < -1f || sy > viewH + 1f) return false
+                    val sx = (nx - 0.5f) * viewW * zz + ppx + contW / 2f
+                    val sy = (ny - 0.5f) * viewH * zz + ppy + contH / 2f
+                    if (sx < -1f || sx > contW + 1f || sy < -1f || sy > contH + 1f) return false
                 }
             }
             return true
         }
         // Recentrar
-        px = (0.5f - box.cx) * viewW * z
-        py = (0.5f - box.cy) * viewH * z
-        val mx = (z - 1f) * viewW / 2f
-        val my = (z - 1f) * viewH / 2f
-        px = px.coerceIn(-mx, mx)
-        py = py.coerceIn(-my, my)
+        var px = panCentrado(box.cx, viewW, contW, z)
+        var py = panCentrado(box.cy, viewH, contH, z)
         var guard = 0
         while (!cornersOk(z, px, py) && z > 1.01f && guard++ < 24) {
             z = (z * 0.92f).coerceAtLeast(1f)
-            px = (0.5f - box.cx) * viewW * z
-            py = (0.5f - box.cy) * viewH * z
-            val mx2 = (z - 1f) * viewW / 2f
-            val my2 = (z - 1f) * viewH / 2f
-            px = px.coerceIn(-mx2, mx2)
-            py = py.coerceIn(-my2, my2)
+            px = panCentrado(box.cx, viewW, contW, z)
+            py = panCentrado(box.cy, viewH, contH, z)
         }
         if (!cornersOk(z, px, py)) return ZoomAlvo(1f, 0f, 0f)
         return ZoomAlvo(z, px, py)

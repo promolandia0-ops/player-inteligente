@@ -5,7 +5,7 @@ android {
   namespace = "br.geracaoai.player"
   compileSdk = 35
   defaultConfig {
-    applicationId = "br.geracaoai.player"; minSdk = 29; targetSdk = 35; versionCode = 18; versionName = "1.3.10"
+    applicationId = "br.geracaoai.player"; minSdk = 29; targetSdk = 35; versionCode = 19; versionName = "1.3.11"
     ndk { abiFilters += (project.findProperty("abis") as String? ?: "arm64-v8a").split(",") }
   }
   signingConfigs { create("release") { if (ks.isNotEmpty()) { storeFile = file(ks["storeFile"] as String); storePassword = ks["storePassword"] as String; keyAlias = ks["keyAlias"] as String; keyPassword = ks["keyPassword"] as String } } }
@@ -32,7 +32,7 @@ dependencies {
   implementation("androidx.media3:media3-exoplayer:1.5.0")
   implementation("androidx.media3:media3-ui:1.5.0")
   implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.5.0+1")
-  implementation("androidx.work:work-runtime-ktx:2.9.1")
+  implementation("androidx.work:work-runtime-ktx:2.10.0")
   implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
   implementation("org.tensorflow:tensorflow-lite:2.14.0")
   testImplementation("junit:junit:4.13.2")

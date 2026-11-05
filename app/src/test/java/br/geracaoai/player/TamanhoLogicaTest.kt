@@ -82,4 +82,27 @@ class TamanhoLogicaTest {
         val a = TamanhoLogica.enquadrarCorpoInteiro(partes, 1080f, 1920f)!!
         assertTrue(a.zoom <= 2.5f + 1e-3f)
     }
+
+    @Test fun letterboxNaoCortaCabecaNemPes() {
+        // Vídeo paisagem em tela retrato (modo Ajustar): view 1080x608 dentro de container 1080x2400.
+        val vw = 1080f; val vh = 608f; val cw = 1080f; val ch = 2400f
+        val partes = listOf(
+            p(TamanhoLogica.FACE_FEMALE, 0.3f, 0.2f, 0.04f, 0.06f),
+            p(TamanhoLogica.FEMALE_BREAST_EXPOSED, 0.3f, 0.3f, 0.06f, 0.05f),
+            p(TamanhoLogica.FEET_EXPOSED, 0.3f, 0.5f, 0.05f, 0.04f),
+        )
+        val alvo = TamanhoLogica.enquadrarCorpoInteiro(partes, vw, vh, contW = cw, contH = ch)!!
+        assertTrue(alvo.zoom > 1.2f)
+        val box = TamanhoLogica.caixaCorpoPadded(partes)!!
+        for (nx in floatArrayOf(box.x0, box.x1)) {
+            for (ny in floatArrayOf(box.y0, box.y1)) {
+                val sx = (nx - 0.5f) * vw * alvo.zoom + alvo.panX + cw / 2f
+                val sy = (ny - 0.5f) * vh * alvo.zoom + alvo.panY + ch / 2f
+                assertTrue("sx=$sx", sx in -2f..(cw + 2f))
+                assertTrue("sy=$sy", sy in -2f..(ch + 2f))
+            }
+        }
+        // Vídeo ampliado continua menor que o container na vertical → sem pan vertical.
+        assertEquals(0f, alvo.panY, 0.5f)
+    }
 }
