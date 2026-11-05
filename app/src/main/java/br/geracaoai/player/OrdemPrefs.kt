@@ -94,7 +94,12 @@ object TamanhoProgresso {
     fun candidatos(nude: Collection<ResultadoOrg>, alvo: TamanhoLogica.Alvo?): Pair<Int, Int> {
         val total = nude.size
         if (alvo == null) {
-            val pend = nude.count { TamanhoLogica.areaPendente(it.areaPeito) && TamanhoLogica.areaPendente(it.areaBunda) && TamanhoLogica.areaPendente(it.areaBuceta) }
+            // Reorganizar todos: falta qualquer métrica.
+            val pend = nude.count {
+                TamanhoLogica.areaPendente(it.areaPeito) ||
+                    TamanhoLogica.areaPendente(it.areaBunda) ||
+                    TamanhoLogica.areaPendente(it.areaBuceta)
+            }
             return total to pend
         }
         val pend = nude.count {
@@ -105,5 +110,14 @@ object TamanhoProgresso {
             }
         }
         return total to pend
+    }
+
+    /** Ids de tile do mesmo par (Peituda/Peitinho …). */
+    fun idsDoPar(alvoId: String): List<String> = when (alvoId) {
+        "__peituda", "__peitinho" -> listOf("__peituda", "__peitinho")
+        "__rabuda", "__rabinho" -> listOf("__rabuda", "__rabinho")
+        "__bucetuda", "__bucetinha" -> listOf("__bucetuda", "__bucetinha")
+        "__reorg", "" -> TamanhoLogica.Alvo.entries.map { it.id } + listOf("__reorg")
+        else -> listOf(alvoId)
     }
 }

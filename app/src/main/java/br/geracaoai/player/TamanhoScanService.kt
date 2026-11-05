@@ -31,9 +31,31 @@ class TamanhoScanService : Service() {
         private const val FRAME_MAX = 320
         private const val FRAMES = 5
 
+        const val PROG_REORG = "__reorg"
+
+        /** Bloqueia se análise por vídeo, org da galeria ou outro tamanho estiver ativo. */
+        private fun ocupado(ctx: Context): String? {
+            if (AnaliseWorker.rodando(ctx)) return "Espere a análise do vídeo terminar"
+            if (rodando(ctx)) return "Já estou medindo tamanho — aguarde"
+            if (OrgPrefs(ctx).ativo && !OrgPrefs(ctx).pausado) return "Espere a organização da galeria terminar"
+            return null
+        }
+
+        private fun setProgPar(ctx: Context, alvoId: String, frac: Float, txt: String) {
+            for (id in TamanhoProgresso.idsDoPar(alvoId.ifBlank { PROG_REORG })) {
+                TamanhoProgresso.set(ctx, id, frac, txt)
+            }
+        }
+
+        private fun clearProgPar(ctx: Context, alvoId: String) {
+            for (id in TamanhoProgresso.idsDoPar(alvoId.ifBlank { PROG_REORG })) {
+                TamanhoProgresso.clear(ctx, id)
+            }
+        }
+
         fun iniciar(ctx: Context, alvoId: String = "") {
-            if (AnaliseWorker.rodando(ctx)) {
-                android.widget.Toast.makeText(ctx, "Espere a análise do vídeo terminar", android.widget.Toast.LENGTH_SHORT).show()
+            ocupado(ctx)?.let {
+                android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show()
                 return
             }
             val alvo = TamanhoLogica.Alvo.deId(alvoId)
@@ -43,20 +65,18 @@ class TamanhoScanService : Service() {
             val (total, pend) = TamanhoProgresso.candidatos(nude, alvo)
             if (total == 0) {
                 val msg = "Nenhum vídeo em Putaria ainda: toque em Organizar primeiro"
-                if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f, msg)
+                if (alvoId.isNotEmpty()) setProgPar(ctx, alvoId, 1f, msg)
                 android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
                 return
             }
             if (pend == 0) {
                 val msg = "Nada novo para medir nesta pasta"
-                if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f, msg)
+                if (alvoId.isNotEmpty()) setProgPar(ctx, alvoId, 1f, msg)
                 android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
                 return
             }
             // Feedback imediato no tile (antes do FGS subir).
-            if (alvoId.isNotEmpty()) {
-                TamanhoProgresso.set(ctx, alvoId, 0.02f, "Analisando 0 de $pend")
-            }
+            if (alvoId.isNotEmpty()) setProgPar(ctx, alvoId, 0.02f, "Analisando 0 de $pend")
             runCatching { OrganizarScanService.yieldToAnalise(ctx) }
             val i = Intent(ctx, TamanhoScanService::class.java).setAction(ACTION_START)
                 .putExtra("alvo", alvoId)
@@ -64,12 +84,58 @@ class TamanhoScanService : Service() {
                 ContextCompat.startForegroundService(ctx, i)
             } catch (e: Throwable) {
                 App.gravarErro(ctx, "tamanho-iniciar", e)
-                if (alvoId.isNotEmpty()) TamanhoProgresso.clear(ctx, alvoId)
+                if (alvoId.isNotEmpty()) clearProgPar(ctx, alvoId)
                 android.widget.Toast.makeText(
                     ctx, "Não iniciei a medição: ${e.message ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG,
                 ).show()
             }
         }
+
+        /**
+         * Reorganiza pastas Por tamanho: re-split instantâneo das métricas já salvas;
+         * mede só Putaria sem métrica. [alvoId] vazio = os 6; senão só o par do tile.
+         */
+        fun reorganizar(ctx: Context, alvoId: String = "") {
+            ocupado(ctx)?.let {
+                android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show()
+                return
+            }
+            val chave = alvoId.ifBlank { PROG_REORG }
+            val alvo = TamanhoLogica.Alvo.deId(alvoId)
+            val nude = runCatching {
+                GaleriaDb(ctx).todos().values.filter { it.classif == ClassifNudez.NUDE }
+            }.getOrDefault(emptyList())
+            val (total, pend) = TamanhoProgresso.candidatos(nude, alvo)
+            if (total == 0) {
+                val msg = "Nenhum vídeo em Putaria ainda: toque em Organizar primeiro"
+                setProgPar(ctx, chave, 1f, msg)
+                android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
+                return
+            }
+            if (pend == 0) {
+                // Nada a medir: split já usa métricas brutas no DB — só feedback.
+                setProgPar(ctx, chave, 1f, "Pastas atualizadas")
+                android.widget.Toast.makeText(
+                    ctx, "Pastas por tamanho atualizadas (sem novos a medir)", android.widget.Toast.LENGTH_SHORT,
+                ).show()
+                return
+            }
+            setProgPar(ctx, chave, 0.02f, "Reorganizando 0 de $pend")
+            runCatching { OrganizarScanService.yieldToAnalise(ctx) }
+            val i = Intent(ctx, TamanhoScanService::class.java).setAction(ACTION_START)
+                .putExtra("alvo", if (alvoId.isBlank()) "" else alvoId)
+                .putExtra("prog", chave)
+            try {
+                ContextCompat.startForegroundService(ctx, i)
+            } catch (e: Throwable) {
+                App.gravarErro(ctx, "tamanho-reorg", e)
+                clearProgPar(ctx, chave)
+                android.widget.Toast.makeText(
+                    ctx, "Não iniciei: ${e.message ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+
         fun parar(ctx: Context) {
             ctx.startService(Intent(ctx, TamanhoScanService::class.java).setAction(ACTION_STOP))
         }
@@ -83,6 +149,7 @@ class TamanhoScanService : Service() {
     private val exec = Executors.newSingleThreadExecutor { Thread(it, "tam-scan").also { t -> t.priority = Thread.NORM_PRIORITY - 1 } }
     private var job: Future<*>? = null
     private var alvoAtual: String = ""
+    private var progKey: String = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -100,17 +167,17 @@ class TamanhoScanService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 stop.set(true); job?.cancel(true)
-                if (alvoAtual.isNotEmpty()) TamanhoProgresso.clear(this, alvoAtual)
+                clearProgPar(this, progKey.ifBlank { alvoAtual.ifBlank { PROG_REORG } })
                 stopSelf()
             }
             ACTION_START -> {
                 stop.set(false)
                 alvoAtual = intent.getStringExtra("alvo") ?: ""
+                progKey = intent.getStringExtra("prog")
+                    ?: alvoAtual.ifBlank { PROG_REORG }
                 subir(2, "Medindo…")
-                if (alvoAtual.isNotEmpty()) {
-                    val snap = TamanhoProgresso.get(this, alvoAtual)
-                    TamanhoProgresso.set(this, alvoAtual, 0.02f, snap?.txt?.ifBlank { "Analisando…" } ?: "Analisando…")
-                }
+                val snap = TamanhoProgresso.get(this, progKey)
+                setProgPar(this, progKey, 0.02f, snap?.txt?.ifBlank { "Analisando…" } ?: "Analisando…")
                 // Sempre (re)inicia para o alvo pedido — senão o 2º toque “não faz nada”.
                 job?.cancel(true)
                 job = exec.submit { rodar(alvoAtual) }
@@ -139,6 +206,7 @@ class TamanhoScanService : Service() {
         val ctx = applicationContext
         val db = GaleriaDb(ctx)
         val alvo = TamanhoLogica.Alvo.deId(alvoId)
+        val pk = progKey.ifBlank { alvoId.ifBlank { PROG_REORG } }
         try {
             Exclusao.esperarScanParar(ctx, 3_000L)
             val nude = db.todos().filter { it.value.classif == ClassifNudez.NUDE }
@@ -147,7 +215,9 @@ class TamanhoScanService : Service() {
                     TamanhoLogica.Alvo.PEITUDA, TamanhoLogica.Alvo.PEITINHO -> TamanhoLogica.areaPendente(r.areaPeito)
                     TamanhoLogica.Alvo.RABUDA, TamanhoLogica.Alvo.RABINHO -> TamanhoLogica.areaPendente(r.areaBunda)
                     TamanhoLogica.Alvo.BUCETUDA, TamanhoLogica.Alvo.BUCETINHA -> TamanhoLogica.areaPendente(r.areaBuceta)
-                    null -> r.areaPeito == 0f && r.areaBunda == 0f && r.areaBuceta == 0f
+                    null -> TamanhoLogica.areaPendente(r.areaPeito) ||
+                        TamanhoLogica.areaPendente(r.areaBunda) ||
+                        TamanhoLogica.areaPendente(r.areaBuceta)
                 }
             }.ifEmpty {
                 // Nada pendente para este alvo: não remede tudo
@@ -158,13 +228,11 @@ class TamanhoScanService : Service() {
                 val msg = if (nude.isEmpty())
                     "Nenhum vídeo em Putaria ainda: toque em Organizar primeiro"
                 else "Nada novo para medir nesta pasta"
-                if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f, msg)
+                setProgPar(ctx, pk, 1f, msg)
                 subir(100, msg)
                 stopSelf(); return
             }
-            if (alvoId.isNotEmpty()) {
-                TamanhoProgresso.set(ctx, alvoId, 0.02f, "Analisando 0 de ${lista.size}")
-            }
+            setProgPar(ctx, pk, 0.02f, "Analisando 0 de ${lista.size}")
             Detector(ctx, false).use { det ->
                 for (i in lista.indices) {
                     val (uriStr, r) = lista[i]
@@ -175,7 +243,7 @@ class TamanhoScanService : Service() {
                     val p = (frac * 100).toInt()
                     val txt = "Analisando ${i + 1} de ${lista.size}"
                     subir(p, txt)
-                    if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, frac.coerceAtMost(0.99f), txt)
+                    setProgPar(ctx, pk, frac.coerceAtMost(0.99f), txt)
                     val ev = medir(ctx, Uri.parse(uriStr), det)
                     val chave = VideosMedia.chaveEstavel(uriStr)
                     fun merge(novo: Float, velho: Float) = when {
@@ -214,13 +282,11 @@ class TamanhoScanService : Service() {
                 }
             }
             subir(100, "Pronto")
-            if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f, "Pronto")
+            setProgPar(ctx, pk, 1f, "Pronto")
         } catch (e: Throwable) {
             Log.e(TAG, "falhou", e)
             App.gravarErro(ctx, "tamanho", e)
-            if (alvoId.isNotEmpty()) {
-                TamanhoProgresso.set(ctx, alvoId, 1f, "Erro: ${e.message ?: e.javaClass.simpleName}")
-            }
+            setProgPar(ctx, pk, 1f, "Erro: ${e.message ?: e.javaClass.simpleName}")
         } finally {
             getSystemService(NotificationManager::class.java).cancel(NOTIF)
             stopSelf()

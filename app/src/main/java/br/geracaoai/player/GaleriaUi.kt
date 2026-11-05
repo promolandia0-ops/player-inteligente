@@ -14,6 +14,8 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -39,6 +41,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -558,18 +562,63 @@ private fun AbaInteligente(
         }
         if (pastasTamanho.isNotEmpty() || (videos?.any { true } == true)) {
             item(span = { GridItemSpan(2) }) {
-                Text("Por tamanho (só Putaria)", style = MaterialTheme.typography.titleSmall, color = Color(0x99FFFFFF),
-                    modifier = Modifier.padding(top = 8.dp))
+                val reorgSnap = tamanhoProg[TamanhoScanService.PROG_REORG]
+                val reorgAndo = reorgSnap != null && reorgSnap.frac < 0.999f
+                Column(Modifier.padding(top = 8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Por tamanho (só Putaria)",
+                            style = MaterialTheme.typography.titleSmall, color = Color(0x99FFFFFF),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            if (reorgAndo) "…" else "Reorganizar",
+                            Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Cores.GradienteH)
+                                .then(
+                                    if (reorgAndo) Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                    else Modifier.toque {
+                                        TamanhoScanService.reorganizar(ctx)
+                                    }.padding(horizontal = 12.dp, vertical = 6.dp),
+                                ),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                        )
+                    }
+                    if (reorgAndo || (reorgSnap != null && reorgSnap.txt.isNotBlank() && reorgSnap.frac >= 0.999f)) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            reorgSnap?.txt?.ifBlank { "Reorganizando…" } ?: "Reorganizando…",
+                            style = MaterialTheme.typography.labelSmall, color = Color(0xCCFFFFFF),
+                        )
+                        if (reorgAndo) {
+                            Spacer(Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = { (reorgSnap?.frac ?: 0f).coerceIn(0f, 1f) },
+                                Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)),
+                                color = Cores.Magenta, trackColor = Color(0x22FFFFFF),
+                            )
+                        }
+                    }
+                    Text(
+                        "Segure um tile para reorganizar só aquele par.",
+                        style = MaterialTheme.typography.labelSmall, color = Color(0x66FFFFFF),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
             }
         }
         items(pastasTamanho.size, key = { pastasTamanho[it].id }) { i ->
             val p = pastasTamanho[i]
-            val prog = tamanhoProg[p.id]
+            val prog = tamanhoProg[p.id] ?: tamanhoProg[TamanhoScanService.PROG_REORG]
             CartaTamanho(
                 p = p,
                 snap = prog,
                 onAnalisar = { TamanhoScanService.iniciar(ctx, p.id) },
                 onAbrir = { onPasta(p) },
+                onReorganizarPar = { TamanhoScanService.reorganizar(ctx, p.id) },
             )
         }
     }
@@ -617,27 +666,42 @@ private fun CartaAlbumSamsung(p: Pasta, destaque: Boolean = false, onClick: () -
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CartaTamanho(
     p: Pasta,
     snap: TamanhoProgresso.Snap?,
     onAnalisar: () -> Unit,
     onAbrir: () -> Unit,
+    onReorganizarPar: () -> Unit = {},
 ) {
     val vazio = p.contagem == 0
     val progresso = snap?.frac
     val txt = snap?.txt.orEmpty()
     val analisando = progresso != null && progresso < 0.999f
     val msgIdle = !analisando && txt.isNotBlank() && p.contagem == 0 &&
-        (txt.startsWith("Nenhum") || txt.startsWith("Nada") || txt.startsWith("Erro"))
+        (txt.startsWith("Nenhum") || txt.startsWith("Nada") || txt.startsWith("Erro") || txt.startsWith("Pastas"))
+    val hap = LocalHapticFeedback.current
     Box(
         Modifier.fillMaxWidth().aspectRatio(1f)
             .then(
                 when {
-                    !vazio -> Modifier.toque(onClick = onAbrir)
-                    // Tile inteiro responde ao toque quando vazio (o Text sozinho era fácil de “errar”).
                     analisando -> Modifier
-                    else -> Modifier.toque(onClick = onAnalisar)
+                    !vazio -> Modifier.combinedClickable(
+                        onClick = onAbrir,
+                        onLongClick = {
+                            hap.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onReorganizarPar()
+                        },
+                    )
+                    // Tile inteiro responde ao toque quando vazio (o Text sozinho era fácil de “errar”).
+                    else -> Modifier.combinedClickable(
+                        onClick = onAnalisar,
+                        onLongClick = {
+                            hap.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onReorganizarPar()
+                        },
+                    )
                 },
             )
             .clip(RoundedCornerShape(18.dp)),
