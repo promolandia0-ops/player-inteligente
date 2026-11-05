@@ -7,3 +7,8 @@ build/
 keystore/
 local.properties
 PlayerInteligente-*.apk
+
+# local build artefacts / stress fixtures
+*.apk
+tools/testdata/
+org_scan_state.properties

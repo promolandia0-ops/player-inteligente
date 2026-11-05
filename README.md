@@ -4,6 +4,7 @@ Player de vídeo Android 100% offline (Kotlin + Jetpack Compose + Media3/ExoPlay
 (**Peito**, **Bunda**, **Buceta**, **Cuzinho**) com o detector **NudeNet 320n** (YOLOv8n, ONNX, 12 MB) rodando no aparelho via ONNX Runtime Mobile
 (NNAPI quando disponível, senão CPU/XNNPACK). O APK não declara permissão de Internet.
 
+- **v1.1.1:** varredura da galeria em processo `:scan` (OOM não mata a UI), progresso persistido/retomável (`x de N`), Pausar/Continuar, 6 keyframes/vídeo com timeout 10s; botão **Analisar vídeo** bem visível no player
 - Biblioteca em pastas (MediaStore BUCKET) + álbuns virtuais **Putaria** / **Sem nudez** / **Não analisados** (botão Organizar galeria; não move arquivos) + grade com busca/ordenar
 - Player imersivo (vídeo em tela cheia) com abas Peito/Bunda/Buceta/Cuzinho + números de cena no overlay
 - Player: play/pausa, busca, velocidade, tela cheia, toque duplo ±10 s, pinça para zoom (até 5x) e pan, modos Ajustar/Preencher/Esticar/100%/Auto,

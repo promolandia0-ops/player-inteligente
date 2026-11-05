@@ -38,6 +38,8 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         private const val TAG = "Analise"
 
         fun iniciar(ctx: Context, uri: Uri, startMs: Long = 0L) {
+            // Prioridade: pede ao :scan para ceder (não é pausa do usuário).
+            runCatching { OrganizarScanService.yieldToAnalise(ctx) }
             val req = OneTimeWorkRequestBuilder<AnaliseWorker>()
                 .setInputData(workDataOf("uri" to uri.toString(), "startMs" to startMs))
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST).build()
@@ -134,10 +136,22 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             val el = (System.currentTimeMillis() - t0) / 1000f
             Log.i(TAG, "ok %.1fs frames=${mapa.size} dur=${dur}ms start=$startMs".format(el))
             setProgress(workDataOf("p" to 1f, "uri" to uri.toString(), "txt" to "Pronto · %.1fs".format(el)))
+            retomarGaleriaSePreciso(ctx)
             Result.success(workDataOf("uri" to uri.toString(), "secs" to el))
         } catch (e: Exception) {
             Log.e(TAG, "falhou", e)
+            retomarGaleriaSePreciso(ctx)
             Result.failure(workDataOf("erro" to (e.message ?: e.toString())))
+        }
+    }
+
+    private fun retomarGaleriaSePreciso(ctx: Context) {
+        runCatching {
+            val op = OrgPrefs(ctx)
+            if (op.ativo && !op.pausado) {
+                OrganizarScanService.start(ctx, op.bucketId)
+                OrganizarWorker.reagendar(ctx)
+            }
         }
     }
 

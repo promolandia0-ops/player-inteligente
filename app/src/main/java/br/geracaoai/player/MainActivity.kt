@@ -96,6 +96,8 @@ data class Pasta(
     val recente: Long get() = videos.maxOfOrNull { it.dataMod } ?: 0L
 }
 enum class Ordenacao(val rotulo: String) { DATA("Data"), NOME("Nome"), TAMANHO("Tamanho") }
+/** Tupla leve para snapshot da varredura (evita recriar muitos remembers). */
+private data class Quint<A,B,C,D,E>(val a: A, val b: B, val c: C, val d: D, val e: E)
 
 fun fmtTam(bytes: Long): String = when {
     bytes < 1024L -> "$bytes B"
@@ -267,11 +269,34 @@ fun Biblioteca(sts: SharedTransitionScope, avs: AnimatedVisibilityScope, onAbrir
     }
     val orgInfos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(OrganizarWorker.NOME).collectAsState(initial = emptyList())
     val orgInfo = orgInfos.firstOrNull()
-    val orgRodando = orgInfo?.state == WorkInfo.State.RUNNING || orgInfo?.state == WorkInfo.State.ENQUEUED
-    val orgProg = orgInfo?.progress?.getFloat("p", 0f) ?: 0f
-    LaunchedEffect(orgInfo?.state) {
-        if (orgInfo?.state == WorkInfo.State.SUCCEEDED || orgInfo?.state == WorkInfo.State.CANCELLED) {
-            orgMap = withContext(Dispatchers.IO) { db.todos() }; orgTick++
+    val orgPrefsTick = remember { mutableIntStateOf(0) }
+    // Poll OrgPrefs (arquivo cross-process) enquanto ativo — atualiza álbuns progressivamente.
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(800)
+            orgPrefsTick.intValue++
+        }
+    }
+    val orgSnap = remember(orgPrefsTick.intValue, orgInfo?.state, orgInfo?.progress) {
+        val op = OrgPrefs(ctx)
+        val feitos = orgInfo?.progress?.getInt("feitos", op.feitos) ?: op.feitos
+        val total = (orgInfo?.progress?.getInt("total", op.total) ?: op.total).coerceAtLeast(1)
+        val txt = orgInfo?.progress?.getString("txt") ?: op.txt
+        val frac = orgInfo?.progress?.getFloat("p", if (total > 0) feitos.toFloat() / total else 0f)
+            ?: (if (total > 0) feitos.toFloat() / total else 0f)
+        val pausado = op.pausado && op.ativo
+        val rodando = op.ativo && !op.pausado
+        Quint(rodando, pausado, frac, txt.ifBlank { "$feitos de $total" }, feitos to total)
+    }
+    val orgRodando = orgSnap.a && !orgSnap.b
+    val orgPausado = orgSnap.b
+    val orgProg = orgSnap.c
+    val orgTxt = orgSnap.d
+    val orgFeitosTotal = orgSnap.e
+    LaunchedEffect(orgPrefsTick.intValue, orgInfo?.state) {
+        // Recarrega mapa do DB periodicamente durante a varredura (álbuns progressivos).
+        if (orgRodando || orgPausado || orgInfo?.state == WorkInfo.State.SUCCEEDED || orgInfo?.state == WorkInfo.State.CANCELLED) {
+            orgMap = withContext(Dispatchers.IO) { db.todos() }
         }
     }
     val pastas = remember(videos) { videos?.let { pastasDe(it) } ?: emptyList() }
@@ -317,10 +342,13 @@ fun Biblioteca(sts: SharedTransitionScope, avs: AnimatedVisibilityScope, onAbrir
             if (pasta == null) {
                 PastasHome(
                     pastas = pastas, smart = albumsVirtuais, videos = videos, temPerm = temPerm,
-                    orgRodando = orgRodando, orgProg = orgProg, orgTxt = orgInfo?.progress?.getString("txt"),
+                    orgRodando = orgRodando || orgPausado, orgProg = orgProg, orgTxt = orgTxt,
                     onAjustes = onAjustes, onPasta = { pastaSel = it; busca = ""; ordem = Ordenacao.DATA },
                     onPermitir = { pedir.launch(perm) }, onOrganizar = { organizar() },
+                    onPausarOrg = { OrganizarWorker.pausar(ctx) },
+                    onContinuarOrg = { OrganizarWorker.continuar(ctx) },
                     onCancelarOrg = { OrganizarWorker.cancelar(ctx) },
+                    orgPausado = orgPausado,
                 )
             } else {
                 PastaVideos(
@@ -341,7 +369,8 @@ private fun PastasHome(
     pastas: List<Pasta>, smart: List<Pasta>, videos: List<Video>?, temPerm: Boolean,
     orgRodando: Boolean, orgProg: Float, orgTxt: String?,
     onAjustes: () -> Unit, onPasta: (Pasta) -> Unit, onPermitir: () -> Unit,
-    onOrganizar: () -> Unit, onCancelarOrg: () -> Unit,
+    onOrganizar: () -> Unit, onPausarOrg: () -> Unit, onContinuarOrg: () -> Unit,
+    onCancelarOrg: () -> Unit, orgPausado: Boolean = false,
 ) {
     LazyVerticalStaggeredGrid(
         StaggeredGridCells.Fixed(2), Modifier.fillMaxSize(),
@@ -360,14 +389,17 @@ private fun PastasHome(
                     }
                 }
                 Spacer(Modifier.height(14.dp))
-                if (orgRodando) {
+                if (orgRodando || orgPausado) {
                     Column(Modifier.fillMaxWidth().vidro(RoundedCornerShape(18.dp)).padding(14.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("Organizando…", style = MaterialTheme.typography.titleSmall)
+                                Text(if (orgPausado) "Organização pausada" else "Organizando…", style = MaterialTheme.typography.titleSmall)
                                 Text(orgTxt ?: "Varredura rápida", style = MaterialTheme.typography.labelSmall, color = Cores.Suave)
                             }
-                            BotaoVidro("Cancelar") { onCancelarOrg() }
+                            if (orgPausado) BotaoVidro("Continuar") { onContinuarOrg() }
+                            else BotaoVidro("Pausar") { onPausarOrg() }
+                            Spacer(Modifier.width(8.dp))
+                            BotaoVidro("Parar") { onCancelarOrg() }
                         }
                         Spacer(Modifier.height(8.dp))
                         LinearProgressIndicator(progress = { orgProg.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
@@ -744,16 +776,46 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                         }
                     }
                     Spacer(Modifier.width(6.dp))
-                    Box(Modifier.size(36.dp).toque(enabled = !(rodando && desteVideo)) { buscar() }
-                        .clip(RoundedCornerShape(12.dp)).background(Cores.GradienteH), contentAlignment = Alignment.Center) {
-                        if (rodando && desteVideo) Text("${(prog * 100).toInt()}", style = MaterialTheme.typography.labelSmall, color = Color.White)
-                        else Icon(Icons.Default.AutoAwesome, "Buscar", tint = Color.White, modifier = Modifier.size(18.dp))
+                    // Botão Analisar: pill grande se ainda não há análise; % + parar se rodando; ícone se já analisou.
+                    val temAnalise = analise != null && !(analise!!.first.parcial && segsTodas.isEmpty())
+                    val semResultados = segsTodas.isEmpty()
+                    when {
+                        rodando && desteVideo -> {
+                            Row(Modifier.toque { AnaliseWorker.cancelar(ctx) }
+                                .clip(RoundedCornerShape(50)).background(Cores.GradienteH)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Text("${(prog * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = Color.White)
+                                Spacer(Modifier.width(6.dp))
+                                Icon(Icons.Default.Close, "Parar", tint = Color.White, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                        !temAnalise || semResultados -> {
+                            Row(Modifier.toque { buscar() }
+                                .clip(RoundedCornerShape(50)).background(Cores.GradienteH)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.AutoAwesome, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Analisar vídeo", style = MaterialTheme.typography.labelMedium, color = Color.White, maxLines = 1)
+                            }
+                        }
+                        else -> {
+                            Box(Modifier.size(36.dp).toque { buscar() }
+                                .clip(RoundedCornerShape(12.dp)).background(Cores.GradienteH), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.AutoAwesome, "Analisar de novo", tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
+                        }
                     }
                 }
                 if (rodando && desteVideo) {
                     Spacer(Modifier.height(6.dp))
                     LinearProgressIndicator(progress = { prog.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)),
                         color = Cores.Magenta, trackColor = Color(0x33FFFFFF))
+                }
+                if (!rodando && segsTodas.isEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Toque em Analisar vídeo para encontrar cenas", style = MaterialTheme.typography.labelSmall, color = Color(0xCCFFFFFF))
                 }
                 AnimatedContent(aba to segs.size, transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) }, label = "nums") { (_, _) ->
                     if (segs.isNotEmpty()) {
