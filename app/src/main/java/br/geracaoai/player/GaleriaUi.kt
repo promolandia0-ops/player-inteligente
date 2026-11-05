@@ -158,7 +158,7 @@ fun Biblioteca(
     val orgInfos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(OrganizarWorker.NOME).collectAsState(initial = emptyList())
     val orgInfo = orgInfos.firstOrNull()
     val orgPrefsTick = remember { mutableIntStateOf(0) }
-    var tamanhoProg by remember { mutableStateOf(TamanhoProgresso.todosAtivos(ctx)) }
+    var tamanhoProg by remember { mutableStateOf<Map<String, TamanhoProgresso.Snap>>(TamanhoProgresso.todosAtivos(ctx)) }
     LaunchedEffect(Unit) { while (true) { delay(800); orgPrefsTick.intValue++; analiseProg = AnaliseProgresso.todosAtivos(ctx); tamanhoProg = TamanhoProgresso.todosAtivos(ctx) } }
     val orgSnap = remember(orgPrefsTick.intValue, orgInfo?.state, orgInfo?.progress) {
         val op = OrgPrefs(ctx)
@@ -432,7 +432,7 @@ private fun AbaAlbuns(
 
 @Composable
 private fun AbaInteligente(
-    smart: List<Pasta>, pastasTamanho: List<Pasta>, tamanhoProg: Map<String, Float>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean,
+    smart: List<Pasta>, pastasTamanho: List<Pasta>, tamanhoProg: Map<String, TamanhoProgresso.Snap>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean,
     orgRodando: Boolean, orgPausado: Boolean, orgProg: Float, orgTxt: String?, recupMsg: String?,
     onPermitir: () -> Unit, onPasta: (Pasta) -> Unit,
     onOrganizar: () -> Unit, onPausarOrg: () -> Unit, onContinuarOrg: () -> Unit, onCancelarOrg: () -> Unit,
@@ -515,7 +515,7 @@ private fun AbaInteligente(
             val prog = tamanhoProg[p.id]
             CartaTamanho(
                 p = p,
-                progresso = prog,
+                snap = prog,
                 onAnalisar = { TamanhoScanService.iniciar(ctx, p.id) },
                 onAbrir = { onPasta(p) },
             )
@@ -568,15 +568,26 @@ private fun CartaAlbumSamsung(p: Pasta, destaque: Boolean = false, onClick: () -
 @Composable
 private fun CartaTamanho(
     p: Pasta,
-    progresso: Float?,
+    snap: TamanhoProgresso.Snap?,
     onAnalisar: () -> Unit,
     onAbrir: () -> Unit,
 ) {
     val vazio = p.contagem == 0
+    val progresso = snap?.frac
+    val txt = snap?.txt.orEmpty()
     val analisando = progresso != null && progresso < 0.999f
+    val msgIdle = !analisando && txt.isNotBlank() && p.contagem == 0 &&
+        (txt.startsWith("Nenhum") || txt.startsWith("Nada") || txt.startsWith("Erro"))
     Box(
         Modifier.fillMaxWidth().aspectRatio(1f)
-            .then(if (!vazio) Modifier.toque(onClick = onAbrir) else Modifier)
+            .then(
+                when {
+                    !vazio -> Modifier.toque(onClick = onAbrir)
+                    // Tile inteiro responde ao toque quando vazio (o Text sozinho era fácil de “errar”).
+                    analisando -> Modifier
+                    else -> Modifier.toque(onClick = onAnalisar)
+                },
+            )
             .clip(RoundedCornerShape(18.dp)),
     ) {
         if (p.videos.isNotEmpty()) Thumb(p.capa.uri, Modifier.fillMaxSize(), w = 360, h = 360)
@@ -593,15 +604,16 @@ private fun CartaTamanho(
             )
             Text(
                 when {
-                    analisando -> "${(progresso!! * 100).toInt()}%"
+                    analisando && txt.isNotBlank() -> txt
+                    analisando -> "${((progresso ?: 0f) * 100).toInt()}%"
                     p.contagem == 1 -> "1 vídeo"
                     else -> "${p.contagem} vídeos"
                 },
-                color = Color(0xCCFFFFFF), fontSize = 12.sp,
+                color = Color(0xCCFFFFFF), fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
         }
         if (vazio) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
                 if (analisando) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(
@@ -612,12 +624,35 @@ private fun CartaTamanho(
                             strokeWidth = 3.dp,
                         )
                         Spacer(Modifier.height(6.dp))
-                        Text("${((progresso ?: 0f) * 100).toInt()}%", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            txt.ifBlank { "${((progresso ?: 0f) * 100).toInt()}%" },
+                            color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                            maxLines = 3,
+                        )
+                    }
+                } else if (msgIdle) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            txt,
+                            color = Color(0xCCFFFFFF), fontSize = 11.sp,
+                            maxLines = 4,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Analisar",
+                            Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Cores.GradienteH)
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                        )
                     }
                 } else {
                     Text(
                         "Analisar",
-                        Modifier.toque(onClick = onAnalisar)
+                        Modifier
                             .clip(RoundedCornerShape(50))
                             .background(Cores.GradienteH)
                             .padding(horizontal = 14.dp, vertical = 8.dp),

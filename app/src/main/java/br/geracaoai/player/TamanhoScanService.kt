@@ -36,17 +36,46 @@ class TamanhoScanService : Service() {
                 android.widget.Toast.makeText(ctx, "Espere a análise do vídeo terminar", android.widget.Toast.LENGTH_SHORT).show()
                 return
             }
+            val alvo = TamanhoLogica.Alvo.deId(alvoId)
+            val nude = runCatching {
+                GaleriaDb(ctx).todos().values.filter { it.classif == ClassifNudez.NUDE }
+            }.getOrDefault(emptyList())
+            val (total, pend) = TamanhoProgresso.candidatos(nude, alvo)
+            if (total == 0) {
+                val msg = "Nenhum vídeo em Putaria ainda: toque em Organizar primeiro"
+                if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f, msg)
+                android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
+                return
+            }
+            if (pend == 0) {
+                val msg = "Nada novo para medir nesta pasta"
+                if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f, msg)
+                android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
+                return
+            }
+            // Feedback imediato no tile (antes do FGS subir).
+            if (alvoId.isNotEmpty()) {
+                TamanhoProgresso.set(ctx, alvoId, 0.02f, "Analisando 0 de $pend")
+            }
             runCatching { OrganizarScanService.yieldToAnalise(ctx) }
             val i = Intent(ctx, TamanhoScanService::class.java).setAction(ACTION_START)
                 .putExtra("alvo", alvoId)
-            ContextCompat.startForegroundService(ctx, i)
+            try {
+                ContextCompat.startForegroundService(ctx, i)
+            } catch (e: Throwable) {
+                App.gravarErro(ctx, "tamanho-iniciar", e)
+                if (alvoId.isNotEmpty()) TamanhoProgresso.clear(ctx, alvoId)
+                android.widget.Toast.makeText(
+                    ctx, "Não iniciei a medição: ${e.message ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
         }
         fun parar(ctx: Context) {
             ctx.startService(Intent(ctx, TamanhoScanService::class.java).setAction(ACTION_STOP))
         }
         fun rodando(ctx: Context): Boolean {
             val p = TamanhoProgresso.todosAtivos(ctx)
-            return p.values.any { it in 0.001f..0.999f }
+            return p.values.any { it.frac in 0.001f..0.999f }
         }
     }
 
@@ -67,9 +96,14 @@ class TamanhoScanService : Service() {
             ACTION_START -> {
                 stop.set(false)
                 alvoAtual = intent.getStringExtra("alvo") ?: ""
-                subir(0, "Medindo…")
-                if (alvoAtual.isNotEmpty()) TamanhoProgresso.set(this, alvoAtual, 0.01f)
-                if (job == null || job!!.isDone) job = exec.submit { rodar(alvoAtual) }
+                subir(2, "Medindo…")
+                if (alvoAtual.isNotEmpty()) {
+                    val snap = TamanhoProgresso.get(this, alvoAtual)
+                    TamanhoProgresso.set(this, alvoAtual, 0.02f, snap?.txt?.ifBlank { "Analisando…" } ?: "Analisando…")
+                }
+                // Sempre (re)inicia para o alvo pedido — senão o 2º toque “não faz nada”.
+                job?.cancel(true)
+                job = exec.submit { rodar(alvoAtual) }
             }
             else -> stopSelf()
         }
@@ -111,8 +145,15 @@ class TamanhoScanService : Service() {
             }
             val lista = pend.entries.toList()
             if (lista.isEmpty()) {
-                if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f)
+                val msg = if (nude.isEmpty())
+                    "Nenhum vídeo em Putaria ainda: toque em Organizar primeiro"
+                else "Nada novo para medir nesta pasta"
+                if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f, msg)
+                subir(100, msg)
                 stopSelf(); return
+            }
+            if (alvoId.isNotEmpty()) {
+                TamanhoProgresso.set(ctx, alvoId, 0.02f, "Analisando 0 de ${lista.size}")
             }
             Detector(ctx, false).use { det ->
                 for (i in lista.indices) {
@@ -122,8 +163,9 @@ class TamanhoScanService : Service() {
                     }
                     val frac = (i + 1).toFloat() / lista.size
                     val p = (frac * 100).toInt()
-                    subir(p, "${i + 1}/${lista.size}")
-                    if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, frac.coerceAtMost(0.99f))
+                    val txt = "Analisando ${i + 1} de ${lista.size}"
+                    subir(p, txt)
+                    if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, frac.coerceAtMost(0.99f), txt)
                     val ev = medir(ctx, Uri.parse(uriStr), det)
                     val chave = VideosMedia.chaveEstavel(uriStr)
                     fun merge(novo: Float, velho: Float) = when {
@@ -162,11 +204,13 @@ class TamanhoScanService : Service() {
                 }
             }
             subir(100, "Pronto")
-            if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f)
+            if (alvoId.isNotEmpty()) TamanhoProgresso.set(ctx, alvoId, 1f, "Pronto")
         } catch (e: Throwable) {
             Log.e(TAG, "falhou", e)
             App.gravarErro(ctx, "tamanho", e)
-            if (alvoId.isNotEmpty()) TamanhoProgresso.clear(ctx, alvoId)
+            if (alvoId.isNotEmpty()) {
+                TamanhoProgresso.set(ctx, alvoId, 1f, "Erro: ${e.message ?: e.javaClass.simpleName}")
+            }
         } finally {
             getSystemService(NotificationManager::class.java).cancel(NOTIF)
             stopSelf()

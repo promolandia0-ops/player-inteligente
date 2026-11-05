@@ -53,30 +53,57 @@ object AnaliseProgresso {
     }
 }
 
-
+/** Progresso + texto do Analisar nas pastas Por tamanho. */
 object TamanhoProgresso {
+    data class Snap(val frac: Float, val txt: String)
+
     private fun p(ctx: Context) = ctx.getSharedPreferences("tamanho_prog", Context.MODE_PRIVATE)
-    fun set(ctx: Context, alvoId: String, frac: Float) {
-        p(ctx).edit().putFloat("p:$alvoId", frac).putLong("t:$alvoId", System.currentTimeMillis()).apply()
+
+    fun set(ctx: Context, alvoId: String, frac: Float, txt: String = "") {
+        p(ctx).edit()
+            .putFloat("p:$alvoId", frac)
+            .putString("x:$alvoId", txt)
+            .putLong("t:$alvoId", System.currentTimeMillis())
+            .apply()
     }
+
     fun clear(ctx: Context, alvoId: String) {
-        p(ctx).edit().remove("p:$alvoId").remove("t:$alvoId").apply()
+        p(ctx).edit().remove("p:$alvoId").remove("x:$alvoId").remove("t:$alvoId").apply()
     }
-    fun get(ctx: Context, alvoId: String): Float? {
+
+    fun get(ctx: Context, alvoId: String): Snap? {
         val sp = p(ctx)
         if (!sp.contains("p:$alvoId")) return null
         val t = sp.getLong("t:$alvoId", 0L)
         if (System.currentTimeMillis() - t > 6 * 3600_000L) return null
-        return sp.getFloat("p:$alvoId", 0f)
+        return Snap(sp.getFloat("p:$alvoId", 0f), sp.getString("x:$alvoId", "") ?: "")
     }
-    fun todosAtivos(ctx: Context): Map<String, Float> {
+
+    fun todosAtivos(ctx: Context): Map<String, Snap> {
         val sp = p(ctx)
-        val out = HashMap<String, Float>()
+        val out = HashMap<String, Snap>()
         for (k in sp.all.keys) {
             if (!k.startsWith("p:")) continue
             val id = k.removePrefix("p:")
             get(ctx, id)?.let { out[id] = it }
         }
         return out
+    }
+
+    /** Conta Putaria (NUDE) e pendentes de área para o alvo — lógica pura / testável. */
+    fun candidatos(nude: Collection<ResultadoOrg>, alvo: TamanhoLogica.Alvo?): Pair<Int, Int> {
+        val total = nude.size
+        if (alvo == null) {
+            val pend = nude.count { TamanhoLogica.areaPendente(it.areaPeito) && TamanhoLogica.areaPendente(it.areaBunda) && TamanhoLogica.areaPendente(it.areaBuceta) }
+            return total to pend
+        }
+        val pend = nude.count {
+            when (alvo) {
+                TamanhoLogica.Alvo.PEITUDA, TamanhoLogica.Alvo.PEITINHO -> TamanhoLogica.areaPendente(it.areaPeito)
+                TamanhoLogica.Alvo.RABUDA, TamanhoLogica.Alvo.RABINHO -> TamanhoLogica.areaPendente(it.areaBunda)
+                TamanhoLogica.Alvo.BUCETUDA, TamanhoLogica.Alvo.BUCETINHA -> TamanhoLogica.areaPendente(it.areaBuceta)
+            }
+        }
+        return total to pend
     }
 }

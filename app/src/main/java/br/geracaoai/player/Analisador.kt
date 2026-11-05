@@ -98,7 +98,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                 Log.e(TAG, "modelo", e)
                 App.gravarErro(ctx, "modelo", e)
                 setProgress(workDataOf("p" to 0f, "uri" to uri.toString(), "txt" to "Erro no modelo"))
-                return@withContext Result.failure(workDataOf("erro" to (e.message ?: "Modelo ONNX não carregou")))
+                return@withContext Result.failure(workDataOf("erro" to errMsg(e)))
             }
 
             // Sempre CPU — NNAPI derrubava o app em vários aparelhos.
@@ -151,7 +151,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             Log.e(TAG, "falhou", e)
             App.gravarErro(ctx, "analise", e)
             AnaliseProgresso.clear(ctx, uri.toString())
-            Result.failure(workDataOf("erro" to (e.message ?: e.javaClass.simpleName)))
+            Result.failure(workDataOf("erro" to errMsg(e)))
         } finally {
             runCatching { mmr.release() }
             // Se o player já fechou, a galeria pode voltar.
@@ -165,6 +165,18 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
  * Núcleo testável da análise por vídeo (mesmo fluxo da v1.1.3 / v1.0.0):
  * pontua quadro a quadro, reporta progresso e monta o mapa de scores.
  */
+private fun errMsg(e: Throwable): String {
+    val parts = ArrayList<String>()
+    var c: Throwable? = e
+    var i = 0
+    while (c != null && i++ < 4) {
+        val m = c.message?.takeIf { it.isNotBlank() }
+        parts += if (m != null) "${c.javaClass.simpleName}: $m" else c.javaClass.simpleName
+        c = c.cause
+    }
+    return parts.joinToString(" → ").take(240)
+}
+
 object AnaliseMotor {
     fun processar(
         n: Int,

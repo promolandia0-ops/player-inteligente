@@ -56,7 +56,18 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
         }
     }
 
-    private val env = OrtEnvironment.getEnvironment()
+    private val env: OrtEnvironment = run {
+        // Garante JNI Microsoft ORT (não o .so do sherpa) antes do clinit.
+        runCatching { System.loadLibrary("onnxruntime4j_jni") }
+            .onFailure { Log.e(TAG, "load onnxruntime4j_jni", it) }
+        try {
+            OrtEnvironment.getEnvironment()
+        } catch (e: Throwable) {
+            throw IllegalStateException(
+                "ONNX Runtime não carregou (${e.javaClass.simpleName}: ${e.message}). Reinstale o APK.", e,
+            )
+        }
+    }
     private val sessao: OrtSession
     private val opcoes: OrtSession.SessionOptions
     var backend = "CPU"; private set

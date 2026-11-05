@@ -5,7 +5,7 @@ android {
   namespace = "br.geracaoai.player"
   compileSdk = 35
   defaultConfig {
-    applicationId = "br.geracaoai.player"; minSdk = 29; targetSdk = 35; versionCode = 11; versionName = "1.3.3"
+    applicationId = "br.geracaoai.player"; minSdk = 29; targetSdk = 35; versionCode = 12; versionName = "1.3.4"
     ndk { abiFilters += (project.findProperty("abis") as String? ?: "arm64-v8a").split(",") }
   }
   signingConfigs { create("release") { if (ks.isNotEmpty()) { storeFile = file(ks["storeFile"] as String); storePassword = ks["storePassword"] as String; keyAlias = ks["keyAlias"] as String; keyPassword = ks["keyPassword"] as String } } }
@@ -15,7 +15,10 @@ android {
   buildFeatures { compose = true; buildConfig = true }
   androidResources { noCompress += listOf("onnx", "tflite") }
   lint { checkReleaseBuilds = false; abortOnError = false }
-  packaging { jniLibs { pickFirsts += listOf("**/libonnxruntime.so", "**/libc++_shared.so") } }
+  packaging {
+    // sherpa AAR was stripped of libonnxruntime.so (conflicts with Microsoft ORT used by NudeNet Java API).
+    jniLibs { pickFirsts += listOf("**/libc++_shared.so") }
+  }
   testOptions { unitTests.isIncludeAndroidResources = true }
 }
 dependencies {

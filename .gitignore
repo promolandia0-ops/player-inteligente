@@ -11,3 +11,6 @@ tools/testdata/
 org_scan_state.properties
 .kotlin/
 /libs/
+
+# local backup of sherpa AAR with bundled ORT (do not ship)
+app/libs/*.aar.full
