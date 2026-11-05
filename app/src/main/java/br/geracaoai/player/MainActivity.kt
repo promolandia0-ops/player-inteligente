@@ -173,34 +173,41 @@ class MainActivity : ComponentActivity() {
             TemaPlayer {
                 Box(Modifier.fillMaxSize().background(Cores.Fundo)) {
                     SharedTransitionLayout {
-                        // Galeria sempre viva (alpha/hit só quando no topo) — back do player restaura aba/pasta/scroll.
                         val playerAberto = nav.value.video != null
                         val ajustesAberto = nav.value.ajustes
-                        Box(Modifier.fillMaxSize().zIndex(0f).alpha(if (playerAberto || ajustesAberto) 0f else 1f)) {
-                            androidx.compose.animation.AnimatedVisibility(visible = true) {
-                                Biblioteca(
-                                    this@SharedTransitionLayout, this,
-                                    onAbrir = { nav.value = Nav(it) },
-                                    onAjustes = { },
-                                    videoDeUri = ::videoDeUri,
-                                    ativa = !playerAberto && !ajustesAberto,
-                                )
+                        // Destinos EXCLUSIVOS: um player só, sem empilhar AnimatedVisibility.
+                        // rememberSaveable na Biblioteca sobrevive ao sair/voltar (registry da Activity).
+                        when {
+                            ajustesAberto -> {
+                                BackHandler { nav.value = Nav() }
+                                Ajustes { nav.value = Nav() }
                             }
-                        }
-                        nav.value.video?.let { v ->
-                            BackHandler { nav.value = Nav(); sairTelaCheia() }
-                            Box(Modifier.fillMaxSize().zIndex(2f).background(Color.Black)) {
-                                androidx.compose.animation.AnimatedVisibility(visible = true) {
-                                    PlayerTela(v, this@MainActivity, this@SharedTransitionLayout, this) {
-                                        nav.value = Nav(); sairTelaCheia()
+                            playerAberto -> {
+                                val v = nav.value.video!!
+                                fun fecharPlayer() {
+                                    sairTelaCheia()
+                                    nav.value = Nav()
+                                }
+                                BackHandler { fecharPlayer() }
+                                // key(uri) força dispose completo do ExoPlayer ao trocar/fechar
+                                key(v.uri.toString()) {
+                                    Box(Modifier.fillMaxSize().background(Color.Black)) {
+                                        PlayerTela(v, this@MainActivity, this@SharedTransitionLayout, null) {
+                                            fecharPlayer()
+                                        }
                                     }
                                 }
                             }
-                        }
-                        if (ajustesAberto) {
-                            BackHandler { nav.value = Nav() }
-                            Box(Modifier.fillMaxSize().zIndex(3f).background(Cores.Fundo)) {
-                                Ajustes { nav.value = Nav() }
+                            else -> {
+                                androidx.compose.animation.AnimatedVisibility(visible = true) {
+                                    Biblioteca(
+                                        this@SharedTransitionLayout, this,
+                                        onAbrir = { nav.value = Nav(it) },
+                                        onAjustes = { },
+                                        videoDeUri = ::videoDeUri,
+                                        ativa = true,
+                                    )
+                                }
                             }
                         }
                     }
@@ -339,7 +346,7 @@ fun Ajustes(voltar: () -> Unit) {
 
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
-fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs: AnimatedVisibilityScope, voltar: () -> Unit) {
+fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs: AnimatedVisibilityScope?, voltar: () -> Unit) {
     val ctx = LocalContext.current
     val hap = LocalHapticFeedback.current
     val prefs = remember { Prefs(ctx) }
@@ -360,6 +367,33 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var cues by remember { mutableStateOf(LegendaEngine.carregar(ctx, video.uri)) }
     var legendaStatus by remember { mutableStateOf<String?>(null) }
     var menuPlayer by remember { mutableStateOf(false) }
+    var melhorProg by remember { mutableStateOf<Pair<Float, String?>?>(null) }
+    var legendaProg by remember { mutableStateOf<Float?>(null) }
+    var mediaUri by remember(video.uri) { mutableStateOf(video.uri) }
+    LaunchedEffect(video.uri) {
+        while (true) {
+            withContext(Dispatchers.IO) {
+                melhorProg = MelhorarProgresso.get(ctx, video.uri.toString())
+                legendaProg = if (traduzirLegenda) LegendaProgresso.get(ctx, video.uri.toString()) else null
+            }
+            val done = melhorProg?.second
+            if (done != null && melhorProg!!.first >= 0.999f) {
+                val novo = Uri.parse(done)
+                if (mediaUri != novo) {
+                    val posKeep = player.currentPosition
+                    mediaUri = novo
+                    player.setMediaItem(MediaItem.fromUri(novo))
+                    player.prepare()
+                    player.seekTo(posKeep)
+                    player.play()
+                    MelhorarProgresso.clear(ctx, video.uri.toString())
+                    melhorProg = null
+                    hud = "Imagem melhorada"
+                }
+            }
+            delay(500)
+        }
+    }
     DisposableEffect(Unit) { onDispose { LegendaEngine.parar() } }
 
     val chave = remember(video.uri) { Cache.chave(ctx, video.uri) }
@@ -389,7 +423,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var velocidade by remember { mutableFloatStateOf(1f) }
     var controles by remember { mutableStateOf(true) }
     var vsize by remember { mutableStateOf(VideoSize.UNKNOWN) }
-    var modo by remember(video.uri) { mutableStateOf(Modo.AUTO) }
+    var modo by remember(video.uri) { mutableStateOf(Modo.AJUSTAR) }
     var zoom by remember(video.uri) { mutableFloatStateOf(1f) }
     var pan by remember(video.uri) { mutableStateOf(Offset.Zero) }
     val zoomAnim by animateFloatAsState(zoom, spring(stiffness = 900f), label = "z")
@@ -402,15 +436,28 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     }
     DisposableEffect(Unit) { onDispose { Exclusao.playerFechado(ctx); Exclusao.retomarGaleriaSePreciso(ctx) } }
     DisposableEffect(video.uri) {
-        // player sempre imersivo
+        // Sempre reentra imersivo a cada abertura (evita status bar por cima nas 2ª+ aberturas)
         act.telaCheia(true, paisagem = false)
-        player.setMediaItem(MediaItem.fromUri(video.uri)); player.prepare(); player.play()
+        player.setMediaItem(MediaItem.fromUri(mediaUri)); player.prepare(); player.play()
         val l = object : Player.Listener {
             override fun onIsPlayingChanged(p: Boolean) { tocando = p }
             override fun onVideoSizeChanged(s: VideoSize) { vsize = s }
         }
         player.addListener(l)
-        onDispose { player.removeListener(l); player.release(); act.sairTelaCheia() }
+        onDispose {
+            player.removeListener(l)
+            runCatching { player.stop() }
+            runCatching { player.clearMediaItems() }
+            runCatching { player.release() }
+            act.sairTelaCheia()
+        }
+    }
+    // Reaplica imersivo se o sistema devolver as barras
+    LaunchedEffect(video.uri) {
+        while (true) {
+            delay(1500)
+            act.telaCheia(true, paisagem = false)
+        }
     }
     LaunchedEffect(Unit) { while (true) { pos = player.currentPosition; dur = player.duration.coerceAtLeast(0); delay(200) } }
     LaunchedEffect(controles, tocando) { if (controles && tocando) { delay(3500); controles = false } }
@@ -469,12 +516,12 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         val (w, h) = tamanhoVideo(modo, cw, ch, vw, vh)
         val wDp by animateDpAsState(with(d) { w.toDp() }, spring(stiffness = 500f), label = "w")
         val hDp by animateDpAsState(with(d) { h.toDp() }, spring(stiffness = 500f), label = "h")
-        with(sts) {
-            AndroidView({ TextureView(it).also { tv -> player.setVideoTextureView(tv) } },
-                Modifier.align(Alignment.Center).requiredSize(wDp, hDp)
-                    .sharedBounds(rememberSharedContentState("v-${video.uri}"), avs, resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds)
-                    .graphicsLayer { scaleX = zoomAnim; scaleY = zoomAnim; translationX = panAnim.x; translationY = panAnim.y })
-        }
+        val videoMod = Modifier.align(Alignment.Center).requiredSize(wDp, hDp)
+            .graphicsLayer { scaleX = zoomAnim; scaleY = zoomAnim; translationX = panAnim.x; translationY = panAnim.y }
+        val videoMod2 = if (avs != null) {
+            with(sts) { videoMod.sharedBounds(rememberSharedContentState("v-${video.uri}"), avs, resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds) }
+        } else videoMod
+        AndroidView({ TextureView(it).also { tv -> player.setVideoTextureView(tv) } }, videoMod2)
         Box(Modifier.fillMaxSize()
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { controles = !controles },
@@ -523,6 +570,33 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
 
         AnimatedVisibility(hud != null, Modifier.align(Alignment.Center), enter = fadeIn() + scaleIn(spring(0.5f, 600f), 0.8f), exit = fadeOut()) {
             Text(hud ?: "", Modifier.vidro(RoundedCornerShape(16.dp), 0.6f).padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.titleSmall, color = Color.White)
+        }
+        // Indicadores discretos (melhorar / legenda) no canto
+        Column(
+            Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            melhorProg?.let { (frac, _) ->
+                if (frac < 0.999f) {
+                    Text(
+                        "↑ ${(frac * 100).toInt()}%",
+                        Modifier.background(Color(0x66000000), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        color = Color.White, style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+            legendaProg?.let { frac ->
+                if (frac < 0.999f) {
+                    Text(
+                        "Aa ${(frac * 100).toInt()}%",
+                        Modifier.background(Color(0x66000000), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        color = Color.White, style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
         }
 
         // —— TOPO: voltar + pills + números + ícone buscar ——

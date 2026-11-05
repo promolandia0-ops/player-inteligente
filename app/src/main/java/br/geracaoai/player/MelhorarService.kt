@@ -26,6 +26,25 @@ import kotlin.math.min
  * reencode H.264 + copia áudio. Modelo ESRGAN completo fica para versão futura (tamanho/APK);
  * esta passagem já reduz compressão/blur perceptível em muitos casos.
  */
+/** Progresso da melhoria: uri original → (frac, uriMelhoradoOuNull). */
+object MelhorarProgresso {
+    private fun p(ctx: Context) = ctx.getSharedPreferences("melhorar_prog", Context.MODE_PRIVATE)
+    fun set(ctx: Context, uriOrig: String, frac: Float, outUri: String? = null) {
+        p(ctx).edit().putFloat("p:$uriOrig", frac).putString("o:$uriOrig", outUri ?: "")
+            .putLong("t:$uriOrig", System.currentTimeMillis()).apply()
+    }
+    fun clear(ctx: Context, uriOrig: String) {
+        p(ctx).edit().remove("p:$uriOrig").remove("o:$uriOrig").remove("t:$uriOrig").apply()
+    }
+    fun get(ctx: Context, uriOrig: String): Pair<Float, String?>? {
+        val sp = p(ctx)
+        if (!sp.contains("p:$uriOrig")) return null
+        if (System.currentTimeMillis() - sp.getLong("t:$uriOrig", 0) > 6 * 3600_000L) return null
+        val out = sp.getString("o:$uriOrig", "")?.ifBlank { null }
+        return sp.getFloat("p:$uriOrig", 0f) to out
+    }
+}
+
 class MelhorarService : Service() {
     companion object {
         const val CANAL = "melhorar"
@@ -35,6 +54,7 @@ class MelhorarService : Service() {
         private const val TAG = "Melhorar"
 
         fun iniciar(ctx: Context, uri: Uri, nome: String) {
+            MelhorarProgresso.set(ctx, uri.toString(), 0.01f)
             val i = Intent(ctx, MelhorarService::class.java).setAction(ACTION_START)
                 .putExtra("uri", uri.toString()).putExtra("nome", nome)
             ContextCompat.startForegroundService(ctx, i)
@@ -119,13 +139,23 @@ class MelhorarService : Service() {
             val ok = encodeComBuffers(ctx, uri, mmr, out, outW, outH, passo, frames) { feitos ->
                 if (stop.get()) return@encodeComBuffers false
                 val p = (feitos * 100 / max(1, frames)).coerceIn(0, 99)
+                MelhorarProgresso.set(ctx, uri.toString(), p / 100f)
                 subir(p, "$p% · ${out.name}")
                 true
             }
             mmr.release()
-            if (stop.get()) { out.delete(); subir(0, "Cancelado") }
-            else if (ok) subir(100, "Salvo em Melhorados")
-            else { out.delete(); subir(0, "Falhou") }
+            if (stop.get()) {
+                out.delete(); MelhorarProgresso.clear(ctx, uri.toString()); subir(0, "Cancelado")
+            } else if (ok) {
+                MelhorarProgresso.set(ctx, uri.toString(), 1f, Uri.fromFile(out).toString())
+                // indexa na galeria se possível
+                runCatching {
+                    android.media.MediaScannerConnection.scanFile(ctx, arrayOf(out.absolutePath), arrayOf("video/mp4"), null)
+                }
+                subir(100, "Salvo em Melhorados")
+            } else {
+                out.delete(); MelhorarProgresso.clear(ctx, uri.toString()); subir(0, "Falhou")
+            }
         } catch (e: Throwable) {
             Log.e(TAG, "falhou", e)
             App.gravarErro(ctx, "melhorar", e)

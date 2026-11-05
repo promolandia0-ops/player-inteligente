@@ -23,6 +23,22 @@ data class Cue(val t0: Long, val t1: Long, val en: String, val pt: String)
  * Qualidade PT: aproximada (dicionário + ordem), não é NMT completo — modelos Opus-MT/CTranslate2
  * não entraram no APK por falta de runtime Android estável neste release.
  */
+object LegendaProgresso {
+    private fun p(ctx: Context) = ctx.getSharedPreferences("legenda_prog", Context.MODE_PRIVATE)
+    fun set(ctx: Context, uri: String, frac: Float) {
+        p(ctx).edit().putFloat("p:$uri", frac).putLong("t:$uri", System.currentTimeMillis()).apply()
+    }
+    fun clear(ctx: Context, uri: String) {
+        p(ctx).edit().remove("p:$uri").remove("t:$uri").apply()
+    }
+    fun get(ctx: Context, uri: String): Float? {
+        val sp = p(ctx)
+        if (!sp.contains("p:$uri")) return null
+        if (System.currentTimeMillis() - sp.getLong("t:$uri", 0) > 6 * 3600_000L) return null
+        return sp.getFloat("p:$uri", 0f)
+    }
+}
+
 object LegendaEngine {
     private const val TAG = "Legenda"
     private val exec = Executors.newSingleThreadExecutor { r ->
@@ -79,20 +95,24 @@ object LegendaEngine {
         val cached = carregar(ctx, uri)
         if (cached.isNotEmpty()) {
             cached.forEach(onCue)
+            LegendaProgresso.set(ctx, uri.toString(), 1f)
             onStatus("Pronto")
             return
         }
         job = exec.submit {
             try {
                 onStatus("Traduzindo…")
+                LegendaProgresso.set(ctx, uri.toString(), 0.02f)
                 val assetDir = copiarModelos(ctx)
                 val recognizer = criarRecognizer(assetDir)
                 val pcm = Gemido.decodificarPcm16k(ctx, uri) ?: run {
-                    onStatus("Sem áudio"); return@submit
+                    onStatus("Sem áudio"); LegendaProgresso.clear(ctx, uri.toString()); return@submit
                 }
                 val cues = ArrayList<Cue>()
                 val chunk = 16_000 * 15 // 15s
                 var pos = ((seekMs.get() / 1000.0) * 16_000).toInt().coerceIn(0, pcm.size)
+                val total = (pcm.size - pos).coerceAtLeast(1)
+                val startPos = pos
                 while (!stop.get() && pos < pcm.size) {
                     val seekAt = ((seekMs.get() / 1000.0) * 16_000).toInt()
                     if (kotlin.math.abs(seekAt - pos) > 16_000 * 3) pos = seekAt.coerceIn(0, pcm.size)
@@ -112,12 +132,18 @@ object LegendaEngine {
                         onCue(cue)
                     }
                     pos = end
+                    val frac = ((pos - startPos).toFloat() / total).coerceIn(0f, 0.99f)
+                    LegendaProgresso.set(ctx, uri.toString(), frac)
+                    onStatus("Traduzindo… ${(frac * 100).toInt()}%")
                 }
                 if (cues.isNotEmpty()) salvar(ctx, uri, cues)
+                if (!stop.get()) LegendaProgresso.set(ctx, uri.toString(), 1f)
+                else LegendaProgresso.clear(ctx, uri.toString())
                 onStatus(if (stop.get()) "Parado" else "Pronto")
                 recognizer.release()
             } catch (e: Throwable) {
                 Log.e(TAG, "falhou", e)
+                LegendaProgresso.clear(ctx, uri.toString())
                 onStatus("Erro: ${e.message ?: e.javaClass.simpleName}")
             }
         }

@@ -21,6 +21,10 @@
         android:foregroundServiceType="dataSync|mediaProcessing"
         android:process=":scan"/>
     <service
+        android:name=".TamanhoScanService"
+        android:exported="false"
+        android:foregroundServiceType="dataSync|mediaProcessing"/>
+    <service
         android:name=".MelhorarService"
         android:exported="false"
         android:foregroundServiceType="dataSync|mediaProcessing"/>

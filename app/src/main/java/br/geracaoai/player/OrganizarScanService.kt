@@ -164,17 +164,18 @@ class OrganizarScanService : Service() {
                 stopSelf()
                 return
             }
-            // v1.1.2: regras de Putaria mais rígidas → reclassifica antigos marcados como Putaria (uma vez).
+            // NUNCA apagar Putaria/classificações em upgrades. classif_v antigo só marca flag.
             val sp = ctx.getSharedPreferences("org_versao", MODE_PRIVATE)
-            if (sp.getInt("classif_v", 1) < 2) { runCatching { db.limparNude() }; sp.edit().putInt("classif_v", 2).commit() }
-            val feitosMap = HashMap<String, Long>()
+            if (sp.getInt("classif_v", 1) < 3) sp.edit().putInt("classif_v", 3).commit()
+            val feitosMap = HashMap<String, Long>() // key canônica → mtime
             db.todos().forEach { (u, r) ->
                 if (r.classif == ClassifNudez.NUDE || r.classif == ClassifNudez.LIMPO || r.classif == ClassifNudez.ERRO)
-                    feitosMap[u] = r.mtime
+                    feitosMap[VideosMedia.chaveEstavel(u)] = r.mtime
             }
             val total = videos.size
             var feitos = videos.count { v ->
-                val m = feitosMap[v.uri.toString()]; m != null && m == v.dataMod
+                val m = feitosMap[VideosMedia.chaveEstavel(v.uri.toString())]
+                m != null && m == v.dataMod
             }
             prefs.total = total
             prefs.feitos = feitos
@@ -198,9 +199,10 @@ class OrganizarScanService : Service() {
                         break
                     }
                     val key = v.uri.toString()
-                    val ant = feitosMap[key]
+                    val chave = VideosMedia.chaveEstavel(key)
+                    val ant = feitosMap[chave]
                     if (ant != null && ant == v.dataMod) {
-                        // Já classificado: só completa embedding se faltar (passagem leve, 1 vídeo por vez).
+                        // Já classificado: NÃO reanalisa. Embedding opcional e separado — não bloqueia "feitos".
                         if (!db.temEmb(key) && !stopFlag.get() && !pauseFlag.get()
                             && !Exclusao.playerEstaAberto(ctx) && !analiseRodando(ctx)
                         ) {
@@ -226,7 +228,7 @@ class OrganizarScanService : Service() {
                             Semelhanca.extrairDeVideo(ctx, v.uri)?.let { db.salvarEmb(key, it) }
                         }
                     }
-                    feitosMap[key] = v.dataMod
+                    feitosMap[chave] = v.dataMod
                     feitos++
                     prefs.feitos = feitos
                     val txt = "$feitos de $total · ${v.nome.take(24)}"

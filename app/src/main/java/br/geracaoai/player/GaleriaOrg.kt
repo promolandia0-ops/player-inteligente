@@ -74,6 +74,18 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
         return m
     }
 
+    /** Índice por chave estável (external vs external_primary). */
+    fun todosPorChaveEstavel(): Map<String, ResultadoOrg> {
+        val m = LinkedHashMap<String, ResultadoOrg>()
+        for ((u, r) in todos()) {
+            val k = VideosMedia.chaveEstavel(u)
+            // Prefere NUDE/LIMPO se houver colisão
+            val ant = m[k]
+            if (ant == null || ant.classif == ClassifNudez.ERRO || ant.classif == ClassifNudez.PENDENTE) m[k] = r
+        }
+        return m
+    }
+
     /** Contagens leves — evita materializar milhares de ResultadoOrg na UI. */
     fun contagens(): Map<ClassifNudez, Int> {
         val out = mutableMapOf<ClassifNudez, Int>()
@@ -115,6 +127,16 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
     fun limpar() { writableDatabase.delete("org", null, null) }
     /** Força reclassificar só os marcados como Putaria (regras mais rígidas na v1.1.2). */
     fun limparNude() { writableDatabase.delete("org", "classif=?", arrayOf("NUDE")) }
+
+    fun salvarAreas(uri: String, areaPeito: Float, areaBunda: Float, areaBuceta: Float) {
+        writableDatabase.update(
+            "org",
+            ContentValues().apply {
+                put("area_peito", areaPeito); put("area_bunda", areaBunda); put("area_buceta", areaBuceta)
+            },
+            "uri=?", arrayOf(uri),
+        )
+    }
 
     fun salvarEmb(uri: String, emb: FloatArray) {
         writableDatabase.update("org", ContentValues().apply { put("emb", Semelhanca.pack(emb)) }, "uri=?", arrayOf(uri))

@@ -14,6 +14,18 @@ import androidx.core.content.ContextCompat
  * todos os MIME de vídeo, sem filtro de duração/tamanho.
  */
 object VideosMedia {
+    /**
+     * Chave estável entre volumes/URIs (`external` vs `external_primary`) para não perder
+     * classificação já salva no DB após upgrades.
+     */
+    fun chaveEstavel(uriStr: String): String {
+        // content://media/external_primary/video/media/123 → …/external/video/media/123
+        // content://media/external/video/media/123 → igual
+        return uriStr
+            .replace("/external_primary/", "/external/")
+            .replace("/external_primary", "/external")
+    }
+
     fun temAcessoCompleto(ctx: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= 33) {
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
@@ -77,10 +89,16 @@ object VideosMedia {
 
         val out = ArrayList<Video>()
         val visto = HashSet<String>() // volume+id
-        for (uriBase in colecoes(ctx)) {
+        for (uriBase0 in colecoes(ctx)) {
+            // Mantém o mesmo scheme que v1.0–v1.2 usavam no volume principal → DB bate.
+            val uriBase =
+                if (uriBase0 == MediaStore.Video.Media.EXTERNAL_CONTENT_URI ||
+                    uriBase0.toString().contains("external_primary")
+                ) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                else uriBase0
             try {
                 ctx.contentResolver.query(
-                    uriBase, cols.toTypedArray(), sel, argArr,
+                    uriBase0, cols.toTypedArray(), sel, argArr, // query no volume real
                     "${MediaStore.Video.Media.DATE_MODIFIED} DESC",
                 )?.use { c ->
                     val iId = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
