@@ -211,9 +211,10 @@ class OrganizarScanService : Service() {
                         continue
                     }
 
-                    val (classif, cats) = classificarComTimeout(ctx, v, det)
+                    val res = classificarComTimeout(ctx, v, det)
+                    val classif = res.classif; val cats = res.cats
                     try {
-                        db.salvar(key, classif, cats, v.dataMod)
+                        db.salvar(key, classif, cats, v.dataMod, res.areaPeito, res.areaBunda, res.areaBuceta)
                     } catch (oom: OutOfMemoryError) {
                         Log.e(TAG, "OOM salvar", oom)
                         runCatching { db.salvar(key, ClassifNudez.ERRO, emptySet(), v.dataMod) }
@@ -279,11 +280,16 @@ class OrganizarScanService : Service() {
     private fun listarVideos(ctx: Context, bucketId: String?): List<Video> =
         VideosMedia.listar(ctx, bucketId)
 
+    private data class ClassifRes(
+        val classif: ClassifNudez, val cats: Set<Categoria>,
+        val areaPeito: Float = 0f, val areaBunda: Float = 0f, val areaBuceta: Float = 0f,
+    )
+
     private fun classificarComTimeout(
         ctx: Context, v: Video, det: Detector,
-    ): Pair<ClassifNudez, Set<Categoria>> {
+    ): ClassifRes {
         val cancel = AtomicBoolean(false)
-        val fut = videoExecutor.submit<Pair<ClassifNudez, Set<Categoria>>> {
+        val fut = videoExecutor.submit<ClassifRes> {
             classificar(ctx, v, det, cancel)
         }
         return try {
@@ -300,22 +306,23 @@ class OrganizarScanService : Service() {
                 if (liberou) break
             }
             if (!liberou) { Log.e(TAG, "vídeo travado no decoder: ${v.uri}"); travado.set(true) }
-            ClassifNudez.ERRO to emptySet()
+            ClassifRes(ClassifNudez.ERRO, emptySet())
         }
     }
 
     private fun classificar(
         ctx: Context, v: Video, det: Detector, cancel: AtomicBoolean,
-    ): Pair<ClassifNudez, Set<Categoria>> {
+    ): ClassifRes {
         var mmr: MediaMetadataRetriever? = null
         return try {
             mmr = MediaMetadataRetriever()
             mmr.setDataSource(ctx, v.uri)
-            if (cancel.get()) return ClassifNudez.ERRO to emptySet()
+            if (cancel.get()) return ClassifRes(ClassifNudez.ERRO, emptySet())
             val dur = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: v.duracao
-            if (dur <= 0L) return ClassifNudez.LIMPO to emptySet()
+            if (dur <= 0L) return ClassifRes(ClassifNudez.LIMPO, emptySet())
             val hits = linkedSetOf<Categoria>()
             var confirmados = 0
+            var maxPeito = 0f; var maxBunda = 0f; var maxBuceta = 0f
             // Só classes *_EXPOSED contam (nunca COVERED/BELLY/FEET/ARMPITS/FACE); ≥2 quadros confirmam.
             fun testar(t: Long): Boolean? {
                 var bmp: Bitmap? = null
@@ -327,8 +334,11 @@ class OrganizarScanService : Service() {
                         if (s !== bmp) bmp.recycle()
                         bmp = s
                     }
-                    val (uiCats, putaria) = det.pontuarExposto(bmp!!, LIMIAR)
+                    val (uiCats, putaria, areas) = det.pontuarExposto(bmp!!, LIMIAR)
                     if (putaria) hits.addAll(uiCats)
+                    maxPeito = maxOf(maxPeito, areas[Categoria.PEITO] ?: 0f)
+                    maxBunda = maxOf(maxBunda, areas[Categoria.BUNDA] ?: 0f)
+                    maxBuceta = maxOf(maxBuceta, areas[Categoria.BUCETA] ?: 0f)
                     return putaria
                 } finally { bmp?.let { if (!it.isRecycled) it.recycle() } }
             }
@@ -350,11 +360,12 @@ class OrganizarScanService : Service() {
                 if (confirmados >= OrganizarWorker.CONFIRMACOES) break
             }
             if (confirmados < OrganizarWorker.CONFIRMACOES) hits.clear()
-            if (hits.isEmpty()) ClassifNudez.LIMPO to emptySet() else ClassifNudez.NUDE to hits
+            if (hits.isEmpty()) ClassifRes(ClassifNudez.LIMPO, emptySet())
+            else ClassifRes(ClassifNudez.NUDE, hits, maxPeito, maxBunda, maxBuceta)
         } catch (oom: OutOfMemoryError) {
-            Log.w(TAG, "OOM video", oom); System.gc(); ClassifNudez.ERRO to emptySet()
+            Log.w(TAG, "OOM video", oom); System.gc(); ClassifRes(ClassifNudez.ERRO, emptySet())
         } catch (e: Exception) {
-            Log.w(TAG, "skip ${v.uri}", e); ClassifNudez.ERRO to emptySet()
+            Log.w(TAG, "skip ${v.uri}", e); ClassifRes(ClassifNudez.ERRO, emptySet())
         } finally {
             runCatching { mmr?.release() }
         }

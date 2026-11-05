@@ -32,7 +32,10 @@ object Cache {
     fun salvar(ctx: Context, chave: String, a: Analise, intervaloMs: Long) {
         val o = JSONObject().put("v", 1).put("duracao", a.duracaoMs).put("intervalo", intervaloMs).put("parcial", a.parcial)
             .put("t", JSONArray().apply { a.tempos.forEach { put(it) } })
-        Categoria.entries.forEach { c -> o.put(c.name, JSONArray().apply { a.scores[c]!!.forEach { put((it * 1000).toInt()) } }) }
+        Categoria.entries.forEach { c ->
+            val arr = a.scores[c] ?: FloatArray(a.tempos.size)
+            o.put(c.name, JSONArray().apply { arr.forEach { put((it * 1000).toInt()) } })
+        }
         val tmp = File(arq(ctx, chave).path + ".tmp"); tmp.writeText(o.toString()); tmp.renameTo(arq(ctx, chave))
     }
 
@@ -40,7 +43,14 @@ object Cache {
         val f = arq(ctx, chave); if (!f.exists()) return null
         val o = JSONObject(f.readText())
         val t = o.getJSONArray("t"); val tempos = LongArray(t.length()) { t.getLong(it) }
-        val sc = Categoria.entries.associateWith { c -> val a = o.getJSONArray(c.name); FloatArray(a.length()) { a.getInt(it) / 1000f } }
+        val sc = Categoria.entries.associateWith { c ->
+            if (!o.has(c.name)) FloatArray(0)
+            else { val a = o.getJSONArray(c.name); FloatArray(a.length()) { a.getInt(it) / 1000f } }
+        }.filterValues { it.isNotEmpty() }.let { m ->
+            // garante todas as cats alinhadas ao tamanho de tempos
+            val n = o.getJSONArray("tempos").length()
+            Categoria.entries.associateWith { c -> m[c]?.let { if (it.size == n) it else FloatArray(n) } ?: FloatArray(n) }
+        }
         Analise(o.getLong("duracao"), tempos, sc, o.optBoolean("parcial", false)) to o.getLong("intervalo")
     }.getOrNull()
 

@@ -5,7 +5,8 @@ enum class Categoria(val rotulo: String, val classIndex: Int, val cor: Long) {
     PEITO("Peito", 3, 0xFFFF5C8A),      // FEMALE_BREAST_EXPOSED
     BUNDA("Bunda", 2, 0xFFFFB300),      // BUTTOCKS_EXPOSED
     BUCETA("Buceta", 4, 0xFFB388FF),    // FEMALE_GENITALIA_EXPOSED
-    ANUS("Cuzinho", 6, 0xFF00E5A8);     // ANUS_EXPOSED
+    ANUS("Cuzinho", 6, 0xFF00E5A8),     // ANUS_EXPOSED
+    GEMIDO("Gemido", -1, 0xFF64B5F6);   // áudio (YAMNet), não NudeNet
 }
 
 data class Segmento(val categoria: Categoria, val inicioMs: Long, val fimMs: Long, val pico: Float)

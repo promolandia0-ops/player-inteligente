@@ -20,6 +20,10 @@
         android:exported="false"
         android:foregroundServiceType="dataSync|mediaProcessing"
         android:process=":scan"/>
+    <service
+        android:name=".MelhorarService"
+        android:exported="false"
+        android:foregroundServiceType="dataSync|mediaProcessing"/>
     <service android:name="androidx.work.impl.foreground.SystemForegroundService" android:foregroundServiceType="dataSync|mediaProcessing" tools:node="merge"/>
   </application>
 </manifest>

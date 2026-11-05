@@ -42,7 +42,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
     }
 
     private fun notif(p: Int, texto: String) = NotificationCompat.Builder(applicationContext, CANAL)
-        .setSmallIcon(R.drawable.ic_notif).setContentTitle("Buscando cenas…").setContentText(texto)
+        .setSmallIcon(R.drawable.ic_notif).setContentTitle("Analisando vídeo").setContentText(texto)
         .setProgress(100, p, false).setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
         .addAction(0, "Cancelar", WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)).build()
 
@@ -80,7 +80,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             if (todos.isEmpty()) todos.add(0L)
             val tempos = todos.toLongArray()
             val n = tempos.size
-            val sc = Categoria.entries.associateWith { FloatArray(n) }
+            val sc = Categoria.entries.associateWith { FloatArray(n) }.toMutableMap()
             val chave = Cache.chave(ctx, uri)
 
             // Confirma o asset do modelo antes de gastar tempo no vídeo.
@@ -117,6 +117,7 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                         val rest = if (i > 0) el * (n - i - 1) / (i + 1) else 0
                         val txt = "$p% · ${det.backend} · faltam ~${rest / 60}m${rest % 60}s"
                         setProgress(workDataOf("p" to (i + 1).toFloat() / n, "uri" to uri.toString(), "txt" to txt))
+                        AnaliseProgresso.set(ctx, uri.toString(), (i + 1).toFloat() / n)
                         nm.notify(42, notif(p, txt))
                         if (i % 20 == 0 && i > 0) {
                             Cache.salvar(ctx, chave,
@@ -125,12 +126,23 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                     }
                 }
             }
+            runCatching {
+                setProgress(workDataOf("p" to 0.95f, "uri" to uri.toString(), "txt" to "Áudio…"))
+                AnaliseProgresso.set(ctx, uri.toString(), 0.95f)
+                nm.notify(42, notif(95, "Gemido…"))
+                val g = Gemido.analisar(ctx, uri, dur, intervalo)
+                sc[Categoria.GEMIDO] = FloatArray(n) { i -> if (i < g.size) g[i] else 0f }
+            }.onFailure { android.util.Log.w(TAG, "gemido", it) }
+
             Cache.salvar(ctx, chave, Analise(dur, tempos, sc), intervalo)
+            AnaliseProgresso.set(ctx, uri.toString(), 1f)
+            // limpa badge depois de um tempo curto — UI trata 1f como ✓
             Log.i(TAG, "ok frames=$n dur=${dur}ms")
             Result.success(workDataOf("uri" to uri.toString()))
         } catch (e: Throwable) {
             Log.e(TAG, "falhou", e)
             App.gravarErro(ctx, "analise", e)
+            AnaliseProgresso.clear(ctx, uri.toString())
             Result.failure(workDataOf("erro" to (e.message ?: e.javaClass.simpleName)))
         } finally {
             runCatching { mmr.release() }

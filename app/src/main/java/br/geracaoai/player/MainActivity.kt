@@ -39,6 +39,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.CornerRadius
@@ -85,7 +87,11 @@ data class Video(
     val bucketId: String = "",
     val bucketNome: String = "",
     val dataMod: Long = 0L,
-)
+    val largura: Int = 0,
+    val altura: Int = 0,
+) {
+    val pixels: Long get() = largura.toLong() * altura.toLong()
+}
 data class Pasta(
     val id: String,
     val nome: String,
@@ -95,7 +101,6 @@ data class Pasta(
     val contagem: Int get() = videos.size
     val recente: Long get() = videos.maxOfOrNull { it.dataMod } ?: 0L
 }
-enum class Ordenacao(val rotulo: String) { DATA("Data"), NOME("Nome"), TAMANHO("Tamanho"), SEMELHANCA("Semelhança") }
 /** Tupla leve para snapshot da varredura (evita recriar muitos remembers). */
 internal data class Quint<A,B,C,D,E>(val a: A, val b: B, val c: C, val d: D, val e: E)
 
@@ -168,15 +173,34 @@ class MainActivity : ComponentActivity() {
             TemaPlayer {
                 Box(Modifier.fillMaxSize().background(Cores.Fundo)) {
                     SharedTransitionLayout {
-                        AnimatedContent(nav.value, transitionSpec = {
-                            (fadeIn(tween(320)) + scaleIn(spring(0.8f, 300f), 0.96f)) togetherWith fadeOut(tween(220))
-                        }, label = "nav", contentKey = { if (it.ajustes) "a" else it.video?.uri?.toString() ?: "b" }) { n ->
-                            when {
-                                n.ajustes -> { BackHandler { nav.value = Nav() }; Ajustes { nav.value = Nav() } }
-                                n.video != null -> { BackHandler { nav.value = Nav(); sairTelaCheia() }
-                                    PlayerTela(n.video, this@MainActivity, this@SharedTransitionLayout, this@AnimatedContent) { nav.value = Nav(); sairTelaCheia() } }
-                                else -> Biblioteca(this@SharedTransitionLayout, this@AnimatedContent, onAbrir = { nav.value = Nav(it) },
-                                    onAjustes = { nav.value = Nav(ajustes = true) }, videoDeUri = ::videoDeUri)
+                        // Galeria sempre viva (alpha/hit só quando no topo) — back do player restaura aba/pasta/scroll.
+                        val playerAberto = nav.value.video != null
+                        val ajustesAberto = nav.value.ajustes
+                        Box(Modifier.fillMaxSize().zIndex(0f).alpha(if (playerAberto || ajustesAberto) 0f else 1f)) {
+                            androidx.compose.animation.AnimatedVisibility(visible = true) {
+                                Biblioteca(
+                                    this@SharedTransitionLayout, this,
+                                    onAbrir = { nav.value = Nav(it) },
+                                    onAjustes = { },
+                                    videoDeUri = ::videoDeUri,
+                                    ativa = !playerAberto && !ajustesAberto,
+                                )
+                            }
+                        }
+                        nav.value.video?.let { v ->
+                            BackHandler { nav.value = Nav(); sairTelaCheia() }
+                            Box(Modifier.fillMaxSize().zIndex(2f).background(Color.Black)) {
+                                androidx.compose.animation.AnimatedVisibility(visible = true) {
+                                    PlayerTela(v, this@MainActivity, this@SharedTransitionLayout, this) {
+                                        nav.value = Nav(); sairTelaCheia()
+                                    }
+                                }
+                            }
+                        }
+                        if (ajustesAberto) {
+                            BackHandler { nav.value = Nav() }
+                            Box(Modifier.fillMaxSize().zIndex(3f).background(Cores.Fundo)) {
+                                Ajustes { nav.value = Nav() }
                             }
                         }
                     }
@@ -268,6 +292,34 @@ fun Ajustes(voltar: () -> Unit) {
         BotaoVidro("Reanalisar galeria", icone = { Icon(Icons.Default.Refresh, null, tint = Cores.Texto) }) {
             runCatching { GaleriaDb(ctx).limpar(); OrganizarWorker.iniciar(ctx) }
             android.widget.Toast.makeText(ctx, "Reclassificando a galeria do zero…", android.widget.Toast.LENGTH_SHORT).show() }
+        var cacheInfo by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(Unit) {
+            cacheInfo = withContext(Dispatchers.IO) {
+                "Cache ~${fmtTam(CacheLimpeza.tamanhoCache(ctx))} · Melhorados ~${fmtTam(CacheLimpeza.tamanhoMelhorados(ctx))}"
+            }
+        }
+        cacheInfo?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = Cores.Suave) }
+        BotaoVidro("Limpar cache", icone = { Icon(Icons.Default.CleaningServices, null, tint = Cores.Texto) }) {
+            val freed = CacheLimpeza.limpar(ctx)
+            cacheInfo = "Cache ~${fmtTam(CacheLimpeza.tamanhoCache(ctx))} · Melhorados ~${fmtTam(CacheLimpeza.tamanhoMelhorados(ctx))}"
+            android.widget.Toast.makeText(ctx, "Liberou ${fmtTam(freed)} (análises e vídeos intactos)", android.widget.Toast.LENGTH_LONG).show()
+        }
+        var melhorados by remember { mutableStateOf(CacheLimpeza.listarMelhorados(ctx)) }
+        if (melhorados.isNotEmpty()) {
+            Cartao {
+                Text("Cópias melhoradas", style = MaterialTheme.typography.titleMedium)
+                Text("${melhorados.size} arquivo(s) · ${fmtTam(melhorados.sumOf { it.length() })}", style = MaterialTheme.typography.bodySmall, color = Cores.Suave)
+                melhorados.forEach { f ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(f.name, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(fmtTam(f.length()), style = MaterialTheme.typography.labelSmall, color = Cores.Suave)
+                        }
+                        TextButton({ f.delete(); melhorados = CacheLimpeza.listarMelhorados(ctx) }) { Text("Apagar") }
+                    }
+                }
+            }
+        }
         BotaoVidro("Apagar análises salvas", icone = { Icon(Icons.Default.DeleteSweep, null, tint = Cores.Texto) }) {
             Cache.limpar(ctx); android.widget.Toast.makeText(ctx, "Análises apagadas", android.widget.Toast.LENGTH_SHORT).show() }
         val totalVids = remember { mutableIntStateOf(-1) }
@@ -304,6 +356,11 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var nivelVol by remember { mutableFloatStateOf(am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVol) }
     var brilho by remember { mutableFloatStateOf(act.window.attributes.screenBrightness.takeIf { it >= 0 } ?: 0.5f) }
     var hud by remember { mutableStateOf<String?>(null) }
+    var traduzirLegenda by remember { mutableStateOf(LegendaEngine.preferencia(ctx, video.uri)) }
+    var cues by remember { mutableStateOf(LegendaEngine.carregar(ctx, video.uri)) }
+    var legendaStatus by remember { mutableStateOf<String?>(null) }
+    var menuPlayer by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) { onDispose { LegendaEngine.parar() } }
 
     val chave = remember(video.uri) { Cache.chave(ctx, video.uri) }
     var analise by remember(video.uri) { mutableStateOf(Cache.carregar(ctx, chave)) }
@@ -316,6 +373,18 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     LaunchedEffect(aba) { prefs.cats = setOf(aba) }
     var pos by remember { mutableLongStateOf(0L) }
     var dur by remember { mutableLongStateOf(0L) }
+    val cueAtual = remember(cues, pos) { cues.lastOrNull { pos in it.t0..it.t1 } }
+    LaunchedEffect(traduzirLegenda, video.uri) {
+        if (traduzirLegenda) {
+            LegendaEngine.iniciar(ctx, video.uri, player.currentPosition,
+                onCue = { c -> cues = cues + c },
+                onStatus = { legendaStatus = it },
+            )
+        } else {
+            LegendaEngine.parar(); legendaStatus = null
+        }
+    }
+    LaunchedEffect(pos) { if (traduzirLegenda) LegendaEngine.seek(pos) }
     var tocando by remember { mutableStateOf(false) }
     var velocidade by remember { mutableFloatStateOf(1f) }
     var controles by remember { mutableStateOf(true) }
@@ -485,6 +554,30 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                             }
                         }
                     }
+                    Spacer(Modifier.width(4.dp))
+                    Box {
+                        Box(Modifier.size(36.dp).toque { menuPlayer = true }.vidro(RoundedCornerShape(12.dp), 0.5f), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.MoreVert, "Menu", tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                        DropdownMenu(menuPlayer, { menuPlayer = false }) {
+                            DropdownMenuItem(
+                                text = { Text(if (traduzirLegenda) "Traduzir legenda: ligado" else "Traduzir legenda") },
+                                onClick = {
+                                    traduzirLegenda = !traduzirLegenda
+                                    LegendaEngine.preferencia(ctx, video.uri, traduzirLegenda)
+                                    menuPlayer = false
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Melhorar imagem") },
+                                onClick = {
+                                    MelhorarService.iniciar(ctx, video.uri, video.nome)
+                                    android.widget.Toast.makeText(ctx, "Melhorando em segundo plano…", android.widget.Toast.LENGTH_SHORT).show()
+                                    menuPlayer = false
+                                },
+                            )
+                        }
+                    }
                     Spacer(Modifier.width(6.dp))
                     // Botão Analisar: pill grande se ainda não há análise; % + parar se rodando; ícone se já analisou.
                     val temAnalise = analise != null && !(analise!!.first.parcial && segsTodas.isEmpty())
@@ -541,6 +634,27 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // —— LEGENDA cinema ——
+        if (traduzirLegenda) {
+            Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp, start = 24.dp, end = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (cueAtual == null && legendaStatus != null && legendaStatus != "Pronto") {
+                    Text(legendaStatus ?: "Traduzindo…", color = Color(0xCCFFFFFF), style = MaterialTheme.typography.labelSmall)
+                }
+                cueAtual?.let { c ->
+                    Text(
+                        c.pt.ifBlank { c.en },
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            shadow = androidx.compose.ui.graphics.Shadow(Color.Black, blurRadius = 6f),
+                        ),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }

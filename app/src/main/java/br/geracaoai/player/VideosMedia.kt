@@ -55,6 +55,8 @@ object VideosMedia {
             MediaStore.Video.Media.BUCKET_ID,
             MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
             MediaStore.Video.Media.DATE_MODIFIED,
+            MediaStore.Video.Media.WIDTH,
+            MediaStore.Video.Media.HEIGHT,
         )
         // MIME só para debug/telemetria futura — não filtramos.
         val mimeIxWanted = cols.size
@@ -95,6 +97,8 @@ object VideosMedia {
                         val bid = runCatching {
                             if (c.isNull(iBid)) "0" else c.getLong(iBid).toString()
                         }.getOrElse { c.getString(iBid) ?: "0" }
+                        val iW = c.getColumnIndex(MediaStore.Video.Media.WIDTH)
+                        val iH = c.getColumnIndex(MediaStore.Video.Media.HEIGHT)
                         out.add(
                             Video(
                                 ContentUris.withAppendedId(uriBase, id),
@@ -104,6 +108,8 @@ object VideosMedia {
                                 bid,
                                 c.getString(iBnome)?.takeIf { it.isNotBlank() } ?: "Outros",
                                 if (c.isNull(iMod)) 0L else c.getLong(iMod),
+                                if (iW >= 0 && !c.isNull(iW)) c.getInt(iW) else 0,
+                                if (iH >= 0 && !c.isNull(iH)) c.getInt(iH) else 0,
                             ),
                         )
                     }
@@ -122,6 +128,7 @@ object VideosMedia {
                             MediaStore.Video.Media.DURATION, MediaStore.Video.Media.SIZE,
                             MediaStore.Video.Media.BUCKET_ID, MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
                             MediaStore.Video.Media.DATE_MODIFIED,
+                            MediaStore.Video.Media.WIDTH, MediaStore.Video.Media.HEIGHT,
                         ),
                         sel2, args2, "${MediaStore.Video.Media.DATE_MODIFIED} DESC",
                     )?.use { c ->
@@ -137,6 +144,8 @@ object VideosMedia {
                                     runCatching { c.getLong(4).toString() }.getOrElse { c.getString(4) ?: "0" },
                                     c.getString(5)?.takeIf { it.isNotBlank() } ?: "Outros",
                                     c.getLong(6),
+                                    runCatching { c.getInt(7) }.getOrDefault(0),
+                                    runCatching { c.getInt(8) }.getOrDefault(0),
                                 ),
                             )
                         }

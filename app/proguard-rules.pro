@@ -1,2 +1,6 @@
 -keep class ai.onnxruntime.** { *; }
 -dontwarn ai.onnxruntime.**
+-keep class org.tensorflow.** { *; }
+-dontwarn org.tensorflow.**
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+-dontwarn com.k2fsa.sherpa.onnx.**

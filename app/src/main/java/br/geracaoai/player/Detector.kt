@@ -122,31 +122,55 @@ class Detector(ctx: Context, usarAcelerador0: Boolean) : AutoCloseable {
                 val fb = out.floatBuffer
                 okRodou()
                 return Categoria.entries.associateWith { cat ->
-                    val base = (4 + cat.classIndex) * a; var m = 0f
-                    for (i in 0 until a) { val v = fb.get(base + i); if (v > m) m = v }
-                    m
+                    if (cat.classIndex < 0) 0f else {
+                        val base = (4 + cat.classIndex) * a; var m = 0f
+                        for (i in 0 until a) { val v = fb.get(base + i); if (v > m) m = v }
+                        m
+                    }
                 }
             }
         }
     }
 
-    fun pontuarExposto(frame: Bitmap, limiar: Float = OrganizarWorker.LIMIAR): Pair<Set<Categoria>, Boolean> {
+    /**
+     * @return cats acima do limiar, se há nudez exposta, e área máx. da caixa (fração do frame 320²)
+     * por categoria UI (0 se não detectou).
+     */
+    fun pontuarExposto(frame: Bitmap, limiar: Float = OrganizarWorker.LIMIAR): Triple<Set<Categoria>, Boolean, Map<Categoria, Float>> {
         preparar(frame)
         OnnxTensor.createTensor(env, buf, longArrayOf(1, 3, S.toLong(), S.toLong())).use { tensor ->
             sessao.run(mapOf(sessao.inputNames.first() to tensor)).use { r ->
                 val out = (r[0] as OnnxTensor)
                 val a = out.info.shape[2].toInt()
                 val fb = out.floatBuffer
-                fun maxClasse(idx: Int): Float {
-                    val base = (4 + idx) * a; var m = 0f
-                    for (i in 0 until a) { val v = fb.get(base + i); if (v > m) m = v }
-                    return m
+                // YOLOv8: linhas 0..3 = cx,cy,w,h (norm. ~0..S); 4+ = classes
+                fun maxClasseEArea(idx: Int): Pair<Float, Float> {
+                    val base = (4 + idx) * a
+                    var m = 0f; var area = 0f
+                    for (i in 0 until a) {
+                        val v = fb.get(base + i)
+                        if (v >= m) {
+                            m = v
+                            val w = fb.get(2 * a + i).coerceAtLeast(0f)
+                            val h = fb.get(3 * a + i).coerceAtLeast(0f)
+                            area = ((w * h) / (S * S).toFloat()).coerceIn(0f, 1f)
+                        }
+                    }
+                    return m to area
                 }
                 okRodou()
-                val ui = Categoria.entries.associateWith { maxClasse(it.classIndex) }
-                val cats = ui.filter { it.value >= limiar }.keys
-                val putaria = OrganizarWorker.CLASSES_EXPOSTAS.any { maxClasse(it) >= limiar }
-                return cats to putaria
+                val areas = HashMap<Categoria, Float>()
+                val cats = linkedSetOf<Categoria>()
+                for (cat in Categoria.entries) {
+                    if (cat.classIndex < 0) continue
+                    val (sc, ar) = maxClasseEArea(cat.classIndex)
+                    if (sc >= limiar) { cats.add(cat); areas[cat] = ar }
+                }
+                var putaria = false
+                for (idx in OrganizarWorker.CLASSES_EXPOSTAS) {
+                    if (maxClasseEArea(idx).first >= limiar) { putaria = true; break }
+                }
+                return Triple(cats, putaria, areas)
             }
         }
     }

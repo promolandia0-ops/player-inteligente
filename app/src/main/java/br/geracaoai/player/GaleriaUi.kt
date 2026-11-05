@@ -65,6 +65,7 @@ fun Biblioteca(
     onAbrir: (Video) -> Unit,
     onAjustes: () -> Unit, // reservado (ajustes agora é aba local)
     videoDeUri: (Uri) -> Video,
+    ativa: Boolean = true,
 ) {
     val ctx = LocalContext.current
     val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -84,6 +85,7 @@ fun Biblioteca(
     var videos by remember { mutableStateOf<List<Video>?>(null) }
     var orgMap by remember { mutableStateOf<Map<String, ResultadoOrg>>(emptyMap()) }
     var embMap by remember { mutableStateOf<Map<String, FloatArray>>(emptyMap()) }
+    var analiseProg by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
     val db = remember { GaleriaDb(ctx) }
     var orgTick by remember { mutableIntStateOf(0) }
 
@@ -91,7 +93,7 @@ fun Biblioteca(
     val abaAtual = runCatching { AbaGaleria.valueOf(aba) }.getOrDefault(AbaGaleria.ALBUNS)
     var pastaId by rememberSaveable { mutableStateOf<String?>(null) }
     var busca by rememberSaveable { mutableStateOf("") }
-    var ordem by rememberSaveable { mutableStateOf(Ordenacao.DATA.name) }
+    var ordem by rememberSaveable { mutableStateOf(Ordenacao.MAIS_NOVOS.name) }
     var menuOrdem by remember { mutableStateOf(false) }
     var colsVideos by rememberSaveable { mutableIntStateOf(4) }
     var colsAlbuns by rememberSaveable { mutableIntStateOf(3) }
@@ -133,13 +135,14 @@ fun Biblioteca(
             Triple(VideosMedia.listar(ctx), db.todos(), db.embeddings())
         }
         videos = vids; orgMap = mapa; embMap = emb
+        analiseProg = AnaliseProgresso.todosAtivos(ctx)
         acessoParcial = VideosMedia.temAcessoParcial(ctx)
     }
 
     val orgInfos by WorkManager.getInstance(ctx).getWorkInfosForUniqueWorkFlow(OrganizarWorker.NOME).collectAsState(initial = emptyList())
     val orgInfo = orgInfos.firstOrNull()
     val orgPrefsTick = remember { mutableIntStateOf(0) }
-    LaunchedEffect(Unit) { while (true) { delay(800); orgPrefsTick.intValue++ } }
+    LaunchedEffect(Unit) { while (true) { delay(800); orgPrefsTick.intValue++; analiseProg = AnaliseProgresso.todosAtivos(ctx) } }
     val orgSnap = remember(orgPrefsTick.intValue, orgInfo?.state, orgInfo?.progress) {
         val op = OrgPrefs(ctx)
         val feitos = orgInfo?.progress?.getInt("feitos", op.feitos) ?: op.feitos
@@ -163,7 +166,8 @@ fun Biblioteca(
     }
 
     val pastas = remember(videos) { videos?.let { pastasDe(it) } ?: emptyList() }
-    val albumsVirtuais = remember(videos, orgMap) {
+    var tamanhoAsc by rememberSaveable { mutableStateOf(false) } // Menores / Maiores toggle
+    val albumsVirtuais = remember(videos, orgMap, tamanhoAsc) {
         val vs = videos ?: return@remember emptyList()
         if (orgMap.isEmpty()) return@remember emptyList()
         val nude = vs.filter { orgMap[it.uri.toString()]?.classif == ClassifNudez.NUDE }
@@ -172,16 +176,30 @@ fun Biblioteca(
             val c = orgMap[it.uri.toString()]?.classif
             c == null || c == ClassifNudez.PENDENTE
         }
+        fun porArea(sel: (ResultadoOrg) -> Float, minArea: Float = 0.001f): List<Video> {
+            val scored = nude.mapNotNull { v ->
+                val r = orgMap[v.uri.toString()] ?: return@mapNotNull null
+                val a = sel(r); if (a < minArea) null else v to a
+            }
+            return if (tamanhoAsc) scored.sortedBy { it.second }.map { it.first }
+            else scored.sortedByDescending { it.second }.map { it.first }
+        }
+        val peito = porArea(sel = { it.areaPeito })
+        val bunda = porArea(sel = { it.areaBunda })
+        val buceta = porArea(sel = { it.areaBuceta })
         buildList {
             if (nude.isNotEmpty()) add(Pasta("__putaria", "Putaria", nude))
             if (limpo.isNotEmpty()) add(Pasta("__sem", "Sem nudez", limpo))
+            if (peito.isNotEmpty()) add(Pasta(if (tamanhoAsc) "__peitinho" else "__peituda", if (tamanhoAsc) "Peitinho" else "Peituda", peito))
+            if (bunda.isNotEmpty()) add(Pasta(if (tamanhoAsc) "__rabinho" else "__rabuda", if (tamanhoAsc) "Rabinho" else "Rabuda", bunda))
+            if (buceta.isNotEmpty()) add(Pasta(if (tamanhoAsc) "__bucetinha" else "__bucetuda", if (tamanhoAsc) "Bucetinha" else "Bucetuda", buceta))
             if (pend.isNotEmpty()) add(Pasta("__pend", "Não analisados", pend))
         }
     }
     val pastaSel = remember(pastaId, pastas, albumsVirtuais) {
         pastaId?.let { id -> pastas.find { it.id == id } ?: albumsVirtuais.find { it.id == id } }
     }
-    val ordemAtual = runCatching { Ordenacao.valueOf(ordem) }.getOrDefault(Ordenacao.DATA)
+    val ordemAtual = runCatching { Ordenacao.valueOf(ordem) }.getOrDefault(Ordenacao.MAIS_NOVOS)
 
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { OrganizarWorker.iniciar(ctx) }
     fun organizar() {
@@ -190,7 +208,7 @@ fun Biblioteca(
         else OrganizarWorker.iniciar(ctx)
     }
 
-    BackHandler(enabled = pastaSel != null) {
+    BackHandler(enabled = ativa && pastaSel != null) {
         guardarScrolls(); pastaId = null; busca = ""
     }
 
@@ -198,10 +216,10 @@ fun Biblioteca(
         when {
             pastaSel != null -> PastaVideosTela(
                 pasta = pastaSel!!, sts = sts, avs = avs, busca = busca, onBusca = { busca = it },
-                ordem = ordemAtual, onOrdem = { ordem = it.name }, menuOrdem = menuOrdem, onMenuOrdem = { menuOrdem = it },
+                ordem = ordemAtual, onOrdem = { o -> ordem = o.name; pastaId?.let { OrdemPrefs.set(ctx, it, o) } }, menuOrdem = menuOrdem, onMenuOrdem = { menuOrdem = it },
                 onVoltar = { guardarScrolls(); pastaId = null; busca = "" },
                 onAbrir = { guardarScrolls(); onAbrir(it) },
-                orgMap = orgMap, embMap = embMap, filtroCats = pastaSel!!.id.startsWith("__"),
+                orgMap = orgMap, embMap = embMap, analiseProg = analiseProg, filtroCats = pastaSel!!.id.startsWith("__"),
                 cols = colsVideos, onCols = { colsVideos = it.coerceIn(3, 5) },
                 gridState = scrollPasta,
             )
@@ -209,7 +227,7 @@ fun Biblioteca(
                 videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
                 onPermitir = { pedir.launch(perm) },
                 onAbrir = { guardarScrolls(); onAbrir(it) },
-                sts = sts, avs = avs, orgMap = orgMap,
+                sts = sts, avs = avs, orgMap = orgMap, analiseProg = analiseProg,
                 cols = colsVideos, onCols = { colsVideos = it.coerceIn(3, 5) },
                 gridState = scrollVideos, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
             )
@@ -218,7 +236,7 @@ fun Biblioteca(
                 onPermitir = { pedir.launch(perm) },
                 onPasta = { p ->
                     guardarScrolls(); pastaId = p.id; busca = ""
-                    ordem = Ordenacao.DATA.name
+                    ordem = OrdemPrefs.get(ctx, p.id, Ordenacao.MAIS_NOVOS).name
                     pastaScrollIx = 0; pastaScrollOff = 0
                 },
                 cols = colsAlbuns, onCols = { colsAlbuns = it.coerceIn(2, 4) },
@@ -226,12 +244,18 @@ fun Biblioteca(
             )
             abaAtual == AbaGaleria.INTELIGENTE -> AbaInteligente(
                 smart = albumsVirtuais, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
+                tamanhoAsc = tamanhoAsc, onTamanhoAsc = { tamanhoAsc = it },
                 orgRodando = orgRodando || orgPausado, orgPausado = orgPausado,
                 orgProg = orgProg, orgTxt = orgTxt,
                 onPermitir = { pedir.launch(perm) },
                 onPasta = { p ->
                     guardarScrolls(); pastaId = p.id; busca = ""
-                    ordem = if (p.id == "__putaria") Ordenacao.SEMELHANCA.name else Ordenacao.DATA.name
+                    val padrao = when (p.id) {
+                        "__putaria" -> Ordenacao.SEMELHANCA
+                        "__peituda", "__peitinho", "__rabuda", "__rabinho", "__bucetuda", "__bucetinha" -> Ordenacao.MAIS_NOVOS
+                        else -> Ordenacao.MAIS_NOVOS
+                    }
+                    ordem = OrdemPrefs.get(ctx, p.id, padrao).name
                     pastaScrollIx = 0; pastaScrollOff = 0
                 },
                 onOrganizar = { organizar() },
@@ -298,6 +322,7 @@ private fun BarraInferiorSamsung(aba: AbaGaleria, onAba: (AbaGaleria) -> Unit, m
 private fun AbaVideos(
     videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean, onPermitir: () -> Unit, onAbrir: (Video) -> Unit,
     sts: SharedTransitionScope, avs: AnimatedVisibilityScope, orgMap: Map<String, ResultadoOrg>,
+    analiseProg: Map<String, Float>,
     cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState, onAbrirArquivo: () -> Unit,
 ) {
     val lista = videos ?: emptyList()
@@ -326,7 +351,7 @@ private fun AbaVideos(
             modifier = Modifier.fillMaxSize(),
         ) {
             items(lista.size, key = { lista[it].uri.toString() }) { i ->
-                TileVideoDenso(lista[i], sts, avs, orgMap[lista[i].uri.toString()]?.classif == ClassifNudez.NUDE) { onAbrir(lista[i]) }
+                TileVideoDenso(lista[i], sts, avs, orgMap[lista[i].uri.toString()]?.classif == ClassifNudez.NUDE, analiseProg[lista[i].uri.toString()]) { onAbrir(lista[i]) }
             }
         }
     }
@@ -381,6 +406,7 @@ private fun AbaAlbuns(
 @Composable
 private fun AbaInteligente(
     smart: List<Pasta>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean,
+    tamanhoAsc: Boolean, onTamanhoAsc: (Boolean) -> Unit,
     orgRodando: Boolean, orgPausado: Boolean, orgProg: Float, orgTxt: String?,
     onPermitir: () -> Unit, onPasta: (Pasta) -> Unit,
     onOrganizar: () -> Unit, onPausarOrg: () -> Unit, onContinuarOrg: () -> Unit, onCancelarOrg: () -> Unit,
@@ -397,6 +423,24 @@ private fun AbaInteligente(
             Column(Modifier.statusBarsPadding().padding(top = 14.dp, bottom = 6.dp)) {
                 Text("Inteligente", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold), color = Color.White)
                 Text("Álbuns por nudez · 100% offline", style = MaterialTheme.typography.labelMedium, color = Color(0x99FFFFFF))
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.clip(RoundedCornerShape(50)).background(Color(0x22FFFFFF)).padding(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    listOf(false to "Maiores", true to "Menores").forEach { (asc, lab) ->
+                        val sel = tamanhoAsc == asc
+                        Text(
+                            lab,
+                            Modifier.toque { onTamanhoAsc(asc) }
+                                .clip(RoundedCornerShape(50))
+                                .then(if (sel) Modifier.background(Cores.GradienteH) else Modifier)
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                            color = Color.White, style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+                Text("Peituda/Rabuda/Bucetuda = maior caixa exposta no quadro (aprox.).", style = MaterialTheme.typography.labelSmall, color = Color(0x66FFFFFF))
                 Spacer(Modifier.height(12.dp))
                 if (!temPerm) BotaoGradiente("Permitir acesso aos vídeos", onClick = onPermitir)
                 else {
@@ -496,7 +540,7 @@ private fun PastaVideosTela(
     pasta: Pasta, sts: SharedTransitionScope, avs: AnimatedVisibilityScope,
     busca: String, onBusca: (String) -> Unit, ordem: Ordenacao, onOrdem: (Ordenacao) -> Unit,
     menuOrdem: Boolean, onMenuOrdem: (Boolean) -> Unit, onVoltar: () -> Unit, onAbrir: (Video) -> Unit,
-    orgMap: Map<String, ResultadoOrg>, embMap: Map<String, FloatArray>, filtroCats: Boolean,
+    orgMap: Map<String, ResultadoOrg>, embMap: Map<String, FloatArray>, analiseProg: Map<String, Float>, filtroCats: Boolean,
     cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState,
 ) {
     var catFiltro by remember { mutableStateOf<Categoria?>(null) }
@@ -504,9 +548,15 @@ private fun PastaVideosTela(
         var base = pasta.videos.filter { busca.isBlank() || it.nome.contains(busca, true) }
         if (catFiltro != null) base = base.filter { orgMap[it.uri.toString()]?.cats?.contains(catFiltro) == true }
         when (ordem) {
-            Ordenacao.DATA -> base.sortedByDescending { it.dataMod }
+            Ordenacao.MAIS_NOVOS -> base.sortedByDescending { it.dataMod }
+            Ordenacao.MAIS_ANTIGOS -> base.sortedBy { it.dataMod }
+            Ordenacao.MAIS_LONGOS -> base.sortedByDescending { it.duracao }
+            Ordenacao.MAIS_CURTOS -> base.sortedBy { it.duracao }
+            Ordenacao.MAIS_PESADOS -> base.sortedByDescending { it.tamanho }
+            Ordenacao.MAIS_LEVES -> base.sortedBy { it.tamanho }
+            Ordenacao.MAIOR_RES -> base.sortedByDescending { it.pixels }
+            Ordenacao.MENOR_RES -> base.sortedBy { it.pixels }
             Ordenacao.NOME -> base.sortedBy { it.nome.lowercase() }
-            Ordenacao.TAMANHO -> base.sortedByDescending { it.tamanho }
             Ordenacao.SEMELHANCA -> Semelhanca.ordenarPorSemelhanca(base, embMap)
         }
     }
@@ -539,6 +589,13 @@ private fun PastaVideosTela(
                 }
             }
         }
+        // chip com ordem atual
+        Text(
+            "Ordenar: ${ordem.rotulo}",
+            Modifier.padding(horizontal = 16.dp, vertical = 2.dp).toque { onMenuOrdem(true) }
+                .clip(RoundedCornerShape(50)).background(Color(0x22FFFFFF)).padding(horizontal = 10.dp, vertical = 4.dp),
+            color = Color(0xCCFFFFFF), style = MaterialTheme.typography.labelSmall,
+        )
         OutlinedTextField(
             value = busca, onValueChange = onBusca, singleLine = true,
             placeholder = { Text("Buscar", color = Color(0x66FFFFFF)) },
@@ -580,7 +637,7 @@ private fun PastaVideosTela(
         ) {
             items(filtrados.size, key = { filtrados[it].uri.toString() }) { i ->
                 val v = filtrados[i]
-                TileVideoDenso(v, sts, avs, orgMap[v.uri.toString()]?.classif == ClassifNudez.NUDE) { onAbrir(v) }
+                TileVideoDenso(v, sts, avs, orgMap[v.uri.toString()]?.classif == ClassifNudez.NUDE, analiseProg[v.uri.toString()]) { onAbrir(v) }
             }
         }
     }
@@ -589,7 +646,7 @@ private fun PastaVideosTela(
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun TileVideoDenso(
-    v: Video, sts: SharedTransitionScope, avs: AnimatedVisibilityScope, nude: Boolean, onClick: () -> Unit,
+    v: Video, sts: SharedTransitionScope, avs: AnimatedVisibilityScope, nude: Boolean, prog: Float? = null, onClick: () -> Unit,
 ) {
     with(sts) {
         Box(
@@ -610,6 +667,14 @@ private fun TileVideoDenso(
                     Modifier.align(Alignment.TopStart).padding(5.dp).size(7.dp)
                         .clip(CircleShape).background(Cores.Magenta),
                 )
+            }
+            if (prog != null) {
+                Box(
+                    Modifier.align(Alignment.Center).clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xCC000000)).padding(horizontal = 6.dp, vertical = 3.dp),
+                ) {
+                    Text(if (prog >= 0.999f) "✓" else "${(prog * 100).toInt()}%", color = Color.White, fontSize = 10.sp)
+                }
             }
         }
     }
