@@ -209,6 +209,10 @@ class MainActivity : ComponentActivity() {
                                             nav.value = Nav()
                                         }
                                         BackHandler { fecharPlayer() }
+                                        // Histórico "Vistos recentemente": grava fora da thread principal.
+                                        LaunchedEffect(v.uri.toString()) {
+                                            withContext(Dispatchers.IO) { runCatching { HistoricoVistos.registrar(this@MainActivity, v.uri, v.nome, v.duracao) } }
+                                        }
                                         key(v.uri.toString()) {
                                             Box(Modifier.fillMaxSize().background(Color.Black)) {
                                                 PlayerTela(v, this@MainActivity, this@SharedTransitionLayout, null) {

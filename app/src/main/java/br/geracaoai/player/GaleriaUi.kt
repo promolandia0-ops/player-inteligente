@@ -216,6 +216,11 @@ fun Biblioteca(
         if (!Semelhanca.mesmoConteudo(emb, embMap)) embMap = emb
     }
 
+    // "Vistos recentemente": relê quando a galeria muda e quando o player fecha (ativa volta a true); fora da UI.
+    val recentes by produceState(emptyList<Video>(), videos, ativa) {
+        if (!ativa) return@produceState
+        value = withContext(Dispatchers.IO) { runCatching { HistoricoVistos.resolver(ctx, videos) }.getOrDefault(emptyList()) }
+    }
     val pastas = remember(videos) { videos?.let { pastasDe(it) } ?: emptyList() }
     val albumsVirtuais = remember(videos, orgMap) {
         val vs = videos ?: return@remember emptyList()
@@ -283,6 +288,7 @@ fun Biblioteca(
                 menuOrdem = menuOrdem, onMenuOrdem = { menuOrdem = it },
                 cols = colsVideos, onCols = { colsVideos = it.coerceIn(3, 5) },
                 gridState = scrollVideos, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
+                recentes = recentes,
             )
             abaAtual == AbaGaleria.ALBUNS -> AbaAlbuns(
                 pastas = pastas, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
@@ -296,6 +302,7 @@ fun Biblioteca(
                 },
                 cols = colsAlbuns, onCols = { colsAlbuns = it.coerceIn(2, 4) },
                 gridState = scrollAlbuns, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
+                recentes = recentes, onAbrir = { guardarScrolls(); onAbrir(it) },
             )
             abaAtual == AbaGaleria.INTELIGENTE -> AbaInteligente(
                 smart = albumsVirtuais, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
@@ -393,6 +400,7 @@ private fun AbaVideos(
     analiseProg: Map<String, Float>,
     ordem: Ordenacao, onOrdem: (Ordenacao) -> Unit, menuOrdem: Boolean, onMenuOrdem: (Boolean) -> Unit,
     cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState, onAbrirArquivo: () -> Unit,
+    recentes: List<Video> = emptyList(),
 ) {
     val brutos = videos ?: emptyList()
     val lista = remember(brutos, ordem, embMap) {
@@ -451,6 +459,7 @@ private fun AbaVideos(
             verticalArrangement = Arrangement.spacedBy(2.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
+            if (recentes.isNotEmpty()) item(key = "__recentes", span = { GridItemSpan(maxLineSpan) }) { LinhaRecentes(recentes, onAbrir, Modifier.padding(horizontal = 10.dp)) }
             items(lista.size, key = { lista[it].uri.toString() }) { i ->
                 TileVideoDenso(lista[i], sts, avs, (orgMap[VideosMedia.chaveEstavel(lista[i].uri.toString())] ?: orgMap[lista[i].uri.toString()])?.classif == ClassifNudez.NUDE, analiseProg[lista[i].uri.toString()]) { onAbrir(lista[i]) }
             }
@@ -462,6 +471,7 @@ private fun AbaVideos(
 private fun AbaAlbuns(
     pastas: List<Pasta>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean, onPermitir: () -> Unit,
     onPasta: (Pasta) -> Unit, cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState, onAbrirArquivo: () -> Unit,
+    recentes: List<Video> = emptyList(), onAbrir: (Video) -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().pointerInput(cols) {
         detectTransformGestures { _, _, zoom, _ ->
@@ -497,6 +507,7 @@ private fun AbaAlbuns(
             verticalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
+            if (recentes.isNotEmpty()) item(key = "__recentes", span = { GridItemSpan(maxLineSpan) }) { LinhaRecentes(recentes, onAbrir) }
             items(pastas.size, key = { pastas[it].id }) { i ->
                 CartaAlbumSamsung(pastas[i]) { onPasta(pastas[i]) }
             }
@@ -776,6 +787,28 @@ private fun TileVideoDenso(
                         .background(Color(0xCC000000)).padding(horizontal = 6.dp, vertical = 3.dp),
                 ) {
                     Text(if (prog >= 0.999f) "✓" else "${(prog * 100).toInt()}%", color = Color.White, fontSize = 10.sp)
+                }
+            }
+        }
+    }
+}
+
+/** Linha horizontal "Vistos recentemente" (topo das abas Álbuns e Vídeos). Miniaturas pelo ThumbCache limitado. */
+@Composable
+private fun LinhaRecentes(vids: List<Video>, onAbrir: (Video) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+        Text("Vistos recentemente", Modifier.padding(start = 2.dp, bottom = 6.dp), color = Color.White,
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+        androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(vids.size, key = { vids[it].uri.toString() }) { i ->
+                val v = vids[i]
+                Box(Modifier.size(width = 112.dp, height = 112.dp).clip(RoundedCornerShape(10.dp)).toque { onAbrir(v) }) {
+                    Thumb(v.uri, Modifier.fillMaxSize(), w = 240, h = 240)
+                    if (v.duracao > 0) Text(
+                        fmt(v.duracao),
+                        Modifier.align(Alignment.BottomEnd).padding(4.dp).background(Color(0x99000000), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 1.dp),
+                        color = Color.White, fontSize = 10.sp,
+                    )
                 }
             }
         }
