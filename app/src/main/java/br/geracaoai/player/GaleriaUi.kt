@@ -452,7 +452,7 @@ private fun AbaVideos(
             return
         }
         BannerAcessoParcial(acessoParcial, onPermitir)
-        LazyVerticalGrid(
+        GradeRapida(
             columns = GridCells.Fixed(cols), state = gridState,
             contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = 100.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -500,7 +500,7 @@ private fun AbaAlbuns(
             return
         }
         BannerAcessoParcial(acessoParcial, onPermitir)
-        LazyVerticalGrid(
+        GradeRapida(
             columns = GridCells.Fixed(cols), state = gridState,
             contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 100.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -725,7 +725,7 @@ private fun PastaVideosTela(
             }
         }
         Spacer(Modifier.height(8.dp))
-        LazyVerticalGrid(
+        GradeRapida(
             columns = GridCells.Fixed(cols), state = gridState,
             contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = 24.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
