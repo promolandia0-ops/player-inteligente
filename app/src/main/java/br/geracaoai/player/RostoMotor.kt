@@ -25,11 +25,11 @@ object RostoMat {
     }
 
     /** Quadro ARGB → tensor BGR 0–255 640×640 (canto sup. esq., resto preto). Devolve (dados, escala). */
-    fun letterbox(pix: IntArray, w: Int, h: Int): Pair<FloatArray, Float> {
+    fun letterbox(pix: IntArray, w: Int, h: Int, reuso: FloatArray? = null): Pair<FloatArray, Float> {
         val s = ENTRADA.toFloat() / max(w, h)
         val nw = Math.round(w * s).coerceIn(1, ENTRADA); val nh = Math.round(h * s).coerceIn(1, ENTRADA)
         val plano = ENTRADA * ENTRADA
-        val out = FloatArray(3 * plano)
+        val out = reuso?.also { java.util.Arrays.fill(it, 0f) } ?: FloatArray(3 * plano)   // buffer por thread reaproveitado (sem 5 MB de lixo por quadro)
         for (y in 0 until nh) {
             val sy = ((y + 0.5f) / s - 0.5f).coerceIn(0f, h - 1f); val y0 = sy.toInt(); val y1 = min(y0 + 1, h - 1); val fy = sy - y0
             for (x in 0 until nw) {
@@ -156,12 +156,14 @@ class RostoMotor(detBytes: ByteArray, recBytes: ByteArray) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
     private val optDet = OrtSession.SessionOptions().apply { setIntraOpNumThreads(2) }
     private val optRec = OrtSession.SessionOptions().apply { setIntraOpNumThreads(2) }
+    /** Uma sessão serve várias threads (OrtSession.run é thread-safe); o buffer de entrada é por thread. */
+    private val bufEntrada = ThreadLocal.withInitial { FloatArray(3 * RostoMat.ENTRADA * RostoMat.ENTRADA) }
     private val det = env.createSession(detBytes, optDet)
     private val rec = env.createSession(recBytes, optRec)
 
     /** Todos os rostos com score ≥ 0,6 (sem embedding) — útil p/ diagnóstico. */
     fun detectar(pix: IntArray, w: Int, h: Int): List<RostoMat.Rosto> {
-        val (dados, escala) = RostoMat.letterbox(pix, w, h)
+        val (dados, escala) = RostoMat.letterbox(pix, w, h, bufEntrada.get())
         OnnxTensor.createTensor(env, FloatBuffer.wrap(dados), longArrayOf(1, 3, RostoMat.ENTRADA.toLong(), RostoMat.ENTRADA.toLong())).use { t ->
             det.run(mapOf(det.inputNames.first() to t)).use { r ->
                 val cache = HashMap<String, FloatArray>()

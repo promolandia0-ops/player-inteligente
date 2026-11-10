@@ -16,16 +16,16 @@ class BundaAbertaTest {
 
     @Test fun mesmoQuadroPegaOMenorDosDois() {
         val r = Derivadas.bundaAberta(t(0, 1, 2), floatArrayOf(0.9f, 0f, 0f), floatArrayOf(0.6f, 0f, 0f))
-        assertEquals(0.6f, r[0], 1e-4f); assertEquals(0f, r[1], 1e-4f)
+        assertEquals("cu 0,6 já vale 1,0 na escala normalizada → manda a buceta", 0.9f, r[0], 1e-4f); assertEquals(0f, r[1], 1e-4f)
     }
 
     @Test fun quadrosDiferentesDentroDaJanelaContamEForaNao() {
         // buceta no quadro 0 (t=0), cu no quadro 2 (t=1000 ms ≤ 1500): os DOIS quadros pontuam
-        val a = Derivadas.bundaAberta(t(0, 1, 2, 3), floatArrayOf(0.9f, 0f, 0f, 0f), floatArrayOf(0f, 0f, 0.7f, 0f))
-        assertEquals(0.7f, a[0], 1e-4f); assertEquals(0.7f, a[2], 1e-4f)
+        val a = Derivadas.bundaAberta(t(0, 1, 2, 3), floatArrayOf(0.9f, 0f, 0f, 0f), floatArrayOf(0f, 0f, 0.4f, 0f))
+        assertEquals(0.4f / 0.6f, a[0], 1e-4f); assertEquals(0.4f / 0.6f, a[2], 1e-4f)
         assertEquals("quadro sem buceta nem cu não recebe: cena não se alarga", 0f, a[1], 1e-4f)
-        // cu a 2,5 s da buceta: fora da janela
-        val b = Derivadas.bundaAberta(t(0, 5), floatArrayOf(0.9f, 0f), floatArrayOf(0f, 0.7f))
+        // cu a 3 s da buceta: fora da janela (2,5 s)
+        val b = Derivadas.bundaAberta(t(0, 6), floatArrayOf(0.9f, 0f), floatArrayOf(0f, 0.7f))
         assertEquals(0f, b[0], 1e-4f); assertEquals(0f, b[1], 1e-4f)
     }
 
@@ -40,7 +40,7 @@ class BundaAbertaTest {
         // análise começa no meio do vídeo e depois volta ao 0 → tempos [3000, 3500, 0, 500]
         val tempos = longArrayOf(3000, 3500, 0, 500)
         val r = Derivadas.bundaAberta(tempos, floatArrayOf(0.9f, 0f, 0f, 0f), floatArrayOf(0f, 0.8f, 0f, 0f))
-        assertEquals(0.8f, r[0], 1e-4f); assertEquals(0.8f, r[1], 1e-4f); assertEquals(0f, r[2], 1e-4f); assertEquals(0f, r[3], 1e-4f)
+        assertEquals(0.9f, r[0], 1e-4f); assertEquals(0.9f, r[1], 1e-4f); assertEquals(0f, r[2], 1e-4f); assertEquals(0f, r[3], 1e-4f)
     }
 
     @Test fun carregarDeriveDaAnaliseSalvaGeraSegmentoEContagemComoAsOutrasCategorias() {
@@ -69,7 +69,7 @@ class BundaAbertaTest {
         java.io.File(dir, "antiga.json").writeText("""{"v":1,"duracao":2000,"intervalo":500,"parcial":false,"t":[0,500,1000,1500],
             "PEITO":[0,0,0,0],"BUNDA":[0,0,0,0],"BUCETA":[900,0,0,0],"ANUS":[0,800,0,0]}""")
         val (a, _) = Cache.carregar(ctx, "antiga")!!
-        assertEquals(0.8f, a.scores[Categoria.BUNDA_ABERTA]!![0], 1e-3f)
+        assertEquals(0.9f, a.scores[Categoria.BUNDA_ABERTA]!![0], 1e-3f)
         assertEquals(4, a.scores.size - 0 - (Categoria.entries.size - 4))
     }
 

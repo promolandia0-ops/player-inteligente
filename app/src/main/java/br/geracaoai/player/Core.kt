@@ -10,29 +10,51 @@ enum class Categoria(val rotulo: String, val classIndex: Int, val cor: Long) {
     BUNDA_ABERTA("Bunda aberta", -1, 0xFFFF6E40);
 }
 
+/**
+ * Limiar POR CLASSE na camada de categorias (o Detector não muda). O NudeNet 320n é fraco em ânus exposto: os scores brutos
+ * costumam ficar em 0,2–0,4, abaixo do limiar único de 0,45 — a categoria quase nunca aparecia. O ânus passa a valer a
+ * partir de [FATOR_ANUS] × o limiar do usuário (0,45 → 0,27); as demais continuam com o limiar inteiro.
+ */
+object Limiares {
+    const val FATOR_ANUS = 0.6f
+    fun fator(c: Categoria): Float = if (c == Categoria.ANUS) FATOR_ANUS else 1f
+    /** Limiar efetivo da categoria (nunca abaixo de ~0,18 nem acima do limiar base). */
+    fun de(c: Categoria, base: Float): Float { val f = fator(c); return if (f >= 1f) base else maxOf(base * f, minOf(base, 0.18f)) }
+    /** Score do ânus na escala do limiar base (≥ base ⇔ bruto ≥ limiar efetivo). */
+    fun normalizarAnus(v: Float): Float = minOf(1f, v / FATOR_ANUS)
+}
+
 /** Categorias derivadas dos scores já salvos (sem mudar o Detector nem o formato da análise). */
 object Derivadas {
-    /** Janela (ms) em que buceta e cu contam como "juntos". */
-    const val JANELA_MS = 1500L
+    /** Janela (ms) em que buceta e cu (ou bunda) contam como "juntos". */
+    const val JANELA_MS = 2500L
+    /** Caminho "por trás" (buceta + bunda exposta, sem cu detectado) vale um pouco menos que o com cu. */
+    const val PESO_BUNDA = 0.85f
 
     /**
-     * Pontuação de "Bunda aberta" por quadro = o MENOR entre buceta e cu quando os dois aparecem no mesmo quadro ou a ≤ [janelaMs]
-     * um do outro (mesmo quadro: min(buceta, cu); senão min(buceta, melhor cu da janela) e vice-versa). Só quadros que têm buceta ou
-     * cu recebem valor — a cena não se alarga além dos quadros detectados. [tempos] pode estar fora de ordem.
+     * Pontuação de "Bunda aberta" por quadro (escala do limiar base):
+     *  - com cu: min(buceta, cu normalizado) — buceta e cu no mesmo quadro ou a ≤ [janelaMs];
+     *  - por trás: [PESO_BUNDA] × min(buceta, bunda exposta) na mesma janela (o cu quase nunca é detectado de fato).
+     * Só quadros que têm buceta, cu ou bunda recebem valor — a cena não se alarga além dos quadros detectados.
+     * [tempos] pode estar fora de ordem.
      */
-    fun bundaAberta(tempos: LongArray, buceta: FloatArray, anus: FloatArray, janelaMs: Long = JANELA_MS): FloatArray {
+    fun bundaAberta(tempos: LongArray, buceta: FloatArray, anus: FloatArray, bunda: FloatArray? = null, janelaMs: Long = JANELA_MS): FloatArray {
         val n = tempos.size
         val out = FloatArray(n)
-        if (n == 0 || buceta.size != n || anus.size != n) return out
+        if (n == 0 || buceta.size != n || anus.size != n || (bunda != null && bunda.size != n)) return out
+        val an = FloatArray(n) { Limiares.normalizarAnus(anus[it]) }
         val ord = (0 until n).sortedBy { tempos[it] }
         for (k in 0 until n) {
             val i = ord[k]
-            var maxB = buceta[i]; var maxA = anus[i]
+            var maxB = buceta[i]; var maxA = an[i]; var maxU = bunda?.get(i) ?: 0f
+            fun olha(j: Int) { maxB = maxOf(maxB, buceta[j]); maxA = maxOf(maxA, an[j]); if (bunda != null) maxU = maxOf(maxU, bunda[j]) }
             var j = k - 1
-            while (j >= 0 && tempos[i] - tempos[ord[j]] <= janelaMs) { maxB = maxOf(maxB, buceta[ord[j]]); maxA = maxOf(maxA, anus[ord[j]]); j-- }
+            while (j >= 0 && tempos[i] - tempos[ord[j]] <= janelaMs) { olha(ord[j]); j-- }
             j = k + 1
-            while (j < n && tempos[ord[j]] - tempos[i] <= janelaMs) { maxB = maxOf(maxB, buceta[ord[j]]); maxA = maxOf(maxA, anus[ord[j]]); j++ }
-            out[i] = maxOf(minOf(buceta[i], maxA), minOf(anus[i], maxB))
+            while (j < n && tempos[ord[j]] - tempos[i] <= janelaMs) { olha(ord[j]); j++ }
+            var v = maxOf(minOf(buceta[i], maxA), minOf(an[i], maxB))
+            if (bunda != null) v = maxOf(v, PESO_BUNDA * maxOf(minOf(buceta[i], maxU), minOf(bunda[i], maxB)))
+            out[i] = v
         }
         return out
     }
@@ -98,7 +120,7 @@ object Segmentador {
 
     fun segmentos(a: Analise, cats: Set<Categoria>, limiar: Float, intervaloMs: Long): List<Segmento> =
         cats.flatMap { c ->
-            a.scores[c]?.let { mesclar(a.tempos, it, c, limiar, intervaloMs, duracaoMs = a.duracaoMs) } ?: emptyList()
+            a.scores[c]?.let { mesclar(a.tempos, it, c, Limiares.de(c, limiar), intervaloMs, duracaoMs = a.duracaoMs) } ?: emptyList()
         }.sortedBy { it.inicioMs }
 
     fun alvoDoSalto(s: Segmento, offsetMs: Long) = maxOf(0L, s.inicioMs - offsetMs)

@@ -51,7 +51,7 @@ object Cache {
             val n = tempos.size
             val base = Categoria.entries.associateWith { c -> m[c]?.let { if (it.size == n) it else FloatArray(n) } ?: FloatArray(n) }
             // "Bunda aberta" não é gravada pelo detector: deriva de buceta + cu salvos (vale também p/ análises antigas).
-            base + (Categoria.BUNDA_ABERTA to Derivadas.bundaAberta(tempos, base[Categoria.BUCETA]!!, base[Categoria.ANUS]!!))
+            base + (Categoria.BUNDA_ABERTA to Derivadas.bundaAberta(tempos, base[Categoria.BUCETA]!!, base[Categoria.ANUS]!!, base[Categoria.BUNDA]!!))
         }
         Analise(o.getLong("duracao"), tempos, sc, o.optBoolean("parcial", false)) to o.getLong("intervalo")
     }.getOrNull()

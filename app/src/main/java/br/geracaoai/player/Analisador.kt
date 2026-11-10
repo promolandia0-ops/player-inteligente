@@ -171,7 +171,8 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                 if (ok) {
                     val n1 = tempos.size
                     val ts = LongArray(n1) { tempos[it] }
-                    val mx = FloatArray(n1) { i -> sc.values.maxOf { it[i] } }
+                    // Refino por classe: o ânus (score fraco) conta na escala dele, p/ sinais de 0,16–0,27 também serem refinados.
+                    val mx = FloatArray(n1) { i -> sc.entries.maxOf { (c, l) -> l[i] / Limiares.fator(c) } }
                     val alvos = AnalisePlano.alvosRefino(ts, mx, prefs.limiar * 0.6f, grosso, fino, dur)
                     ok = fase(AnalisePlano.resolver(alvos, syncs, fino * 3 / 4, feitos), 0.85f, 0.15f)
                 }
