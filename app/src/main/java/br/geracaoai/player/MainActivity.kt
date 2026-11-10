@@ -378,6 +378,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var telaOff by remember { mutableStateOf(prefs.telaDesligada) }
     var zoomAuto by remember { mutableStateOf(prefs.zoomAuto) }
     var zoomManual by remember(video.uri) { mutableStateOf(false) }
+    var zoomStatus by remember { mutableStateOf<String?>(null) }
     var textureView by remember { mutableStateOf<TextureView?>(null) }
     var viewCw by remember { mutableFloatStateOf(0f) }
     var viewCh by remember { mutableFloatStateOf(0f) }
@@ -415,8 +416,8 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var modo by remember(video.uri) { mutableStateOf(Modo.AJUSTAR) }
     var zoom by remember(video.uri) { mutableFloatStateOf(1f) }
     var pan by remember(video.uri) { mutableStateOf(Offset.Zero) }
-    val zoomAnim by animateFloatAsState(zoom, spring(stiffness = 280f, dampingRatio = 0.86f), label = "z")
-    val panAnim by animateOffsetAsState(pan, spring(stiffness = 280f, dampingRatio = 0.86f), label = "pn")
+    val zoomAnim by animateFloatAsState(zoom, spring(stiffness = 380f, dampingRatio = 0.9f), label = "z")
+    val panAnim by animateOffsetAsState(pan, spring(stiffness = 450f, dampingRatio = 0.9f), label = "pn")
 
     // Galeria nunca compete com o player: cede ao abrir, retoma ao sair.
     LaunchedEffect(Unit) {
@@ -473,80 +474,83 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         }
     }
     LaunchedEffect(zoomAuto, zoomManual, video.uri) {
-        if (!zoomAuto || zoomManual) return@LaunchedEffect
+        if (!zoomAuto || zoomManual) { zoomStatus = null; return@LaunchedEffect }
         var det: Detector? = null
-        val historico = ArrayDeque<List<TamanhoLogica.CaixaParte>>(4)
+        val rastreador = ZoomRastreador { bmp, lim ->
+            val d = det ?: Detector(ctx, false).also { det = it }
+            d.caixasCorpo(bmp, lim)
+        }
+        val historico = ArrayDeque<List<TamanhoLogica.CaixaParte>>(3)
         var ultimo: TamanhoLogica.ZoomAlvo? = null
         var semCorpo = 0
-        var ciclo = 0
         var posParado = -1L
+        var ultimoMotivo = ""
+        fun motivo(m: String) { if (m != ultimoMotivo) { ultimoMotivo = m; android.util.Log.d("ZoomAuto", m) } }
+        android.util.Log.d("ZoomAuto", "loop iniciado")
+        zoomStatus = "Zoom: procurando…"
         try {
             while (true) {
-                delay(700)
+                delay(400)
                 if (!zoomAuto || zoomManual) break
                 // Pausado e sem mudar de posição: nada novo para enquadrar (poupa CPU/bateria).
-                if (!player.isPlaying) { val pp = player.currentPosition; if (pp == posParado) continue; posParado = pp } else posParado = -1L
+                if (!player.isPlaying) { val pp = player.currentPosition; if (pp == posParado) { motivo("pausado/sem mudança"); continue }; posParado = pp } else posParado = -1L
                 // Consulta ao WorkManager fora da thread principal (antes bloqueava a UI a cada ciclo).
-                if (withContext(Dispatchers.IO) { AnaliseWorker.rodando(ctx) }) continue
-                val tv = textureView ?: continue
-                if (!tv.isAvailable) continue
+                // Com a análise rodando em segundo plano o zoom continua, só que mais devagar (não disputa CPU em excesso).
+                if (withContext(Dispatchers.IO) { AnaliseWorker.rodando(ctx) }) { motivo("análise rodando (ciclo mais lento)"); delay(500) }
+                val tv = textureView
+                if (tv == null) { motivo("textureView null"); continue }
+                if (!tv.isAvailable) { motivo("textureView indisponível"); continue }
                 val cw = viewCw; val ch = viewCh
                 val vw = vidW; val vh = vidH
-                if (vw < 8f || vh < 8f || cw < 8f || ch < 8f) continue
-                // Mantém a proporção do vídeo (antes esticava p/ 320×320 e o detector via o corpo deformado).
-                val esc = 800f / maxOf(vw, vh)
+                if (vw < 8f || vh < 8f || cw < 8f || ch < 8f) { motivo("tamanho 0 vw=$vw vh=$vh cw=$cw ch=$ch"); continue }
+                // Quadro inteiro na proporção do vídeo (até 1024 px): o rastreador recorta/escala por conta própria.
+                val esc = 1024f / maxOf(vw, vh)
                 val bw = (vw * esc).toInt().coerceAtLeast(16); val bh = (vh * esc).toInt().coerceAtLeast(16)
-                val bmp = runCatching { tv.getBitmap(bw, bh) }.getOrNull() ?: continue
-                ciclo++
-                val tentarLadrilhos = ciclo % 2 == 0
-                val partes = withContext(Dispatchers.Default) {
+                val bmp = runCatching { tv.getBitmap(bw, bh) }.getOrNull()
+                if (bmp == null) { motivo("getBitmap null"); continue }
+                val res = withContext(Dispatchers.Default) {
                     try {
-                        if (det == null) det = Detector(ctx, false)
-                        val d = det!!
-                        var r = TamanhoLogica.paraQuadro(d.caixasCorpo(bmp, TamanhoLogica.LIMIAR), bmp.width, bmp.height)
-                        if (r.isEmpty() && tentarLadrilhos) {
-                            // Nada no quadro inteiro: procura mulher pequena/distante em 4 recortes ampliados.
-                            val acc = ArrayList<TamanhoLogica.CaixaParte>()
-                            for (rg in TamanhoLogica.ladrilhos()) {
-                                val x = (rg.x0 * bmp.width).toInt().coerceIn(0, bmp.width - 2)
-                                val y = (rg.y0 * bmp.height).toInt().coerceIn(0, bmp.height - 2)
-                                val w = (rg.w * bmp.width).toInt().coerceIn(2, bmp.width - x)
-                                val h = (rg.h * bmp.height).toInt().coerceIn(2, bmp.height - y)
-                                val rec = Bitmap.createBitmap(bmp, x, y, w, h)
-                                try { acc += TamanhoLogica.paraQuadro(d.caixasCorpo(rec, TamanhoLogica.LIMIAR), w, h, rg) }
-                                finally { if (rec !== bmp && !rec.isRecycled) rec.recycle() }
-                            }
-                            r = acc
-                        }
-                        r
-                    } catch (_: Throwable) {
-                        runCatching { det?.close() }; det = null
-                        emptyList()
+                        rastreador.passo(bmp)
+                    } catch (e: Throwable) {
+                        android.util.Log.w("ZoomAuto", "detector falhou", e)
+                        runCatching { det?.close() }; det = null; rastreador.esquecer()
+                        ZoomRastreador.Resultado(emptyList(), ZoomRastreador.Modo.NADA, 0)
                     } finally {
                         if (!bmp.isRecycled) bmp.recycle()
                     }
                 }
+                val partes = res.partes
+                motivo("${res.modo} inf=${res.inferencias} partes=" + partes.joinToString { "${it.classe}@${"%.2f".format(it.caixa.sc)}" })
                 if (partes.isNotEmpty()) {
+                    // Se ela "pulou" de lugar (andou muito / voltou à cena), descarta o passado: o zoom vai direto.
+                    val bn = TamanhoLogica.caixaCorpoPadded(partes); val bo = historico.lastOrNull()?.let { TamanhoLogica.caixaCorpoPadded(it) }
+                    if (bn != null && bo != null && kotlin.math.abs((bn.x0 + bn.x1) / 2f - (bo.x0 + bo.x1) / 2f) > 0.2f) historico.clear()
                     historico.addLast(partes)
-                    while (historico.size > 3) historico.removeFirst()
+                    // Só as 2 últimas detecções (~0,8 s): a união segue a mulher quando ela anda.
+                    while (historico.size > 2) historico.removeFirst()
                     semCorpo = 0
                 } else {
                     semCorpo++
-                    if (semCorpo >= 4) {
-                        // Nada por ~3s → volta suavemente a 1x
+                    zoomStatus = "Zoom: procurando…"
+                    if (semCorpo >= 8) {
+                        // Nada por ~3 s → volta suavemente a 1x
                         if (zoom > 1.05f) { zoom = 1f; pan = Offset.Zero; ultimo = TamanhoLogica.ZoomAlvo(1f, 0f, 0f) }
                         historico.clear()
                     }
                     continue
                 }
                 val uniao = TamanhoLogica.uniaoTemporal(historico.toList())
-                val alvo = TamanhoLogica.enquadrarCorpoInteiro(uniao, vw, vh, contW = cw, contH = ch) ?: continue
+                val alvo = TamanhoLogica.enquadrarCorpoInteiro(uniao, vw, vh, contW = cw, contH = ch)
+                if (alvo == null) { motivo("sem alvo (poucas partes)"); continue }
+                zoomStatus = if (alvo.zoom > 1.01f) "Zoom: seguindo" else "Zoom: ela já ocupa o quadro"
                 if (!TamanhoLogica.deveAtualizarAlvo(ultimo, alvo)) continue
+                android.util.Log.d("ZoomAuto", "alvo zoom=${alvo.zoom} pan=${alvo.panX},${alvo.panY}")
                 ultimo = alvo
                 zoom = alvo.zoom
                 pan = Offset(alvo.panX, alvo.panY)
             }
         } finally {
+            zoomStatus = null
             runCatching { det?.close() }
         }
     }
@@ -724,6 +728,12 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         AnimatedVisibility(hud != null, Modifier.align(Alignment.Center), enter = fadeIn() + scaleIn(spring(0.5f, 600f), 0.8f), exit = fadeOut()) {
             Text(hud ?: "", Modifier.vidro(RoundedCornerShape(16.dp), 0.6f).padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.titleSmall, color = Color.White)
         }
+        // Indicador discreto de que o Zoom automático está ativo (procurando / seguindo).
+        if (zoomAuto && zoomStatus != null) {
+            Text(zoomStatus ?: "", Modifier.align(Alignment.CenterStart).padding(start = 6.dp)
+                .vidro(RoundedCornerShape(8.dp), 0.45f).padding(horizontal = 6.dp, vertical = 2.dp),
+                style = MaterialTheme.typography.labelSmall, color = Color(0xCCFFFFFF), maxLines = 1)
+        }
         // —— TOPO: voltar + pills + números + ícone buscar ——
         AnimatedVisibility(controles, Modifier.align(Alignment.TopCenter).statusBarsPadding(),
             enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 }) {
@@ -773,6 +783,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                                 onClick = {
                                     zoomAuto = !zoomAuto
                                     prefs.zoomAuto = zoomAuto
+                                    android.util.Log.d("ZoomAuto", "toggle -> $zoomAuto")
                                     zoomManual = false
                                     if (!zoomAuto) resetZoom()
                                     hud = if (zoomAuto) "Zoom automático ligado" else "Zoom automático desligado"

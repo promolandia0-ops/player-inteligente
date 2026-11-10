@@ -217,3 +217,44 @@ class TamanhoLogicaTest {
         assertTrue(TamanhoLogica.deveAtualizarAlvo(alvo, longe))
     }
 }
+
+class ZoomRecortesTest {
+    @Test fun quadradosCobremOQuadroEFicamDentro() {
+        for ((w, h) in listOf(1280 to 720, 720 to 1280, 1000 to 1000, 1920 to 800)) {
+            for (frac in listOf(1f, 0.5f)) {
+                val q = TamanhoLogica.quadrados(w, h, frac)
+                assertTrue(q.isNotEmpty())
+                for (r in q) {
+                    assertTrue(r.x0 >= 0f && r.y0 >= 0f && r.x1 <= 1.0001f && r.y1 <= 1.0001f)
+                    // quadrado de verdade (em pixels)
+                    assertEquals((r.x1 - r.x0) * w, (r.y1 - r.y0) * h, 1.5f)
+                }
+                for (i in 0..20) for (j in 0..20) {
+                    val nx = i / 20f; val ny = j / 20f
+                    assertTrue("($nx,$ny) $w×$h frac=$frac", q.any { nx in it.x0 - 1e-4f..it.x1 + 1e-4f && ny in it.y0 - 1e-4f..it.y1 + 1e-4f })
+                }
+            }
+        }
+    }
+
+    @Test fun recorteEmVoltaDoBoxFicaDentroEContemOBox() {
+        val box = TamanhoLogica.RectN(0.40f, 0.30f, 0.52f, 0.70f)
+        val r = TamanhoLogica.recorteQuadradoEm(box, 1280, 720)
+        assertTrue(r.x0 >= 0f && r.y0 >= 0f && r.x1 <= 1f && r.y1 <= 1f)
+        assertEquals((r.x1 - r.x0) * 1280, (r.y1 - r.y0) * 720, 1.5f)
+        assertTrue(r.x0 <= box.x0 && r.x1 >= box.x1 && r.y0 <= box.y0 && r.y1 >= box.y1)
+        // Encostada na borda: continua dentro do quadro.
+        val b = TamanhoLogica.recorteQuadradoEm(TamanhoLogica.RectN(0f, 0f, 0.1f, 0.3f), 1280, 720)
+        assertTrue(b.x0 >= 0f && b.y0 >= 0f)
+        val c = TamanhoLogica.recorteQuadradoEm(TamanhoLogica.RectN(0.9f, 0.7f, 1f, 1f), 1280, 720)
+        assertTrue(c.x1 <= 1.0001f && c.y1 <= 1.0001f)
+    }
+
+    @Test fun validoExigeRostoOuDuasPartes() {
+        fun p(c: Int) = TamanhoLogica.CaixaParte(c, TamanhoLogica.Caixa(0.9f, 0.5f, 0.5f, 0.1f, 0.1f))
+        assertFalse(TamanhoLogica.valido(emptyList()))
+        assertFalse(TamanhoLogica.valido(listOf(p(TamanhoLogica.FEET_EXPOSED))))
+        assertTrue(TamanhoLogica.valido(listOf(p(TamanhoLogica.FACE_FEMALE))))
+        assertTrue(TamanhoLogica.valido(listOf(p(TamanhoLogica.BELLY_EXPOSED), p(TamanhoLogica.FEET_COVERED))))
+    }
+}

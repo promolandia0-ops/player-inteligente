@@ -212,6 +212,43 @@ object TamanhoLogica {
         }
     }
 
+    /** Resultado utilizável: o rosto (estima o corpo) ou pelo menos 2 partes distintas. */
+    fun valido(partes: List<CaixaParte>): Boolean =
+        partes.isNotEmpty() && (partes.any { it.classe == FACE_FEMALE } || classesDistintas(partes) >= 2)
+
+    /**
+     * Quadrados (em coordenadas normalizadas do quadro) de lado [ladoFrac]×lado menor do quadro, varrendo o
+     * quadro todo com sobreposição. Quadrados usam o canvas 320×320 do detector por inteiro (um vídeo 16:9
+     * inteiro só usava 320×180) e ampliam a mulher distante.
+     */
+    fun quadrados(frameW: Int, frameH: Int, ladoFrac: Float, passoFrac: Float = 0.75f): List<RectN> {
+        if (frameW < 2 || frameH < 2) return emptyList()
+        val curto = minOf(frameW, frameH).toFloat()
+        val lado = (curto * ladoFrac).coerceIn(2f, curto)
+        fun posicoes(total: Int): List<Float> {
+            if (lado >= total - 1f) return listOf(0f)
+            val n = kotlin.math.ceil(((total - lado) / (lado * passoFrac)).toDouble()).toInt() + 1
+            return List(n) { i -> (total - lado) * i / (n - 1) }
+        }
+        val out = ArrayList<RectN>()
+        for (y in posicoes(frameH)) for (x in posicoes(frameW)) {
+            out += RectN(x / frameW, y / frameH, (x + lado) / frameW, (y + lado) / frameH)
+        }
+        return out
+    }
+
+    /**
+     * Recorte quadrado em volta de [box] (acompanhar a mulher já achada com 1 só inferência):
+     * lado = [folga]× o maior lado do box, entre [minFrac] e 1× o lado menor do quadro, sempre dentro do quadro.
+     */
+    fun recorteQuadradoEm(box: RectN, frameW: Int, frameH: Int, folga: Float = 1.35f, minFrac: Float = 0.30f): RectN {
+        val curto = minOf(frameW, frameH).toFloat()
+        val lado = (maxOf(box.w * frameW, box.h * frameH) * folga).coerceIn(curto * minFrac, curto)
+        val x0 = (box.cx * frameW - lado / 2f).coerceIn(0f, frameW - lado)
+        val y0 = (box.cy * frameH - lado / 2f).coerceIn(0f, frameH - lado)
+        return RectN(x0 / frameW, y0 / frameH, (x0 + lado) / frameW, (y0 + lado) / frameH)
+    }
+
     /** Regiões 2×2 sobrepostas (cada uma com [frac] do quadro) p/ achar mulher pequena/distante. */
     fun ladrilhos(frac: Float = 0.6f): List<RectN> {
         val o = 1f - frac
