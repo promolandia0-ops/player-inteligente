@@ -196,6 +196,12 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
         return n
     }
 
+    /** Assinatura barata (sem materializar linhas) p/ a UI saber se algo mudou desde a última leitura. */
+    fun assinatura(): String =
+        readableDatabase.rawQuery(
+            "SELECT COUNT(*), COALESCE(SUM(scanned_at),0), COALESCE(SUM(emb IS NOT NULL),0), COALESCE(SUM(LENGTH(cats)),0), COALESCE(SUM(mtime),0) FROM org", null,
+        ).use { c -> if (c.moveToFirst()) (0 until 5).joinToString("|") { c.getLong(it).toString() } else "" }
+
     fun limpar() { writableDatabase.delete("org", null, null) }
     /** Força reclassificar só os marcados como Putaria (regras mais rígidas na v1.1.2). */
     fun limparNude() { writableDatabase.delete("org", "classif=?", arrayOf("NUDE")) }

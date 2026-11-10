@@ -21,6 +21,14 @@ class GaleriaDbRecoveryTest {
         db = GaleriaDb(ctx)
     }
 
+    @Test fun linhaAntigaComCategoriaGemidoAindaLe() {
+        db.salvar("content://media/external/video/media/55", ClassifNudez.NUDE, setOf(Categoria.PEITO), 1L)
+        db.writableDatabase.execSQL("UPDATE org SET cats='PEITO,GEMIDO' WHERE uri='content://media/external/video/media/55'")
+        val r = db.obter("content://media/external/video/media/55")!!
+        assertEquals(setOf(Categoria.PEITO), r.cats)
+        assertEquals(ClassifNudez.NUDE, r.classif)
+    }
+
     @Test fun normalizarUrisPreservaClassif() {
         db.salvar("content://media/external_primary/video/media/1", ClassifNudez.NUDE, setOf(Categoria.PEITO), 10L)
         db.salvar("content://media/external_primary/video/media/2", ClassifNudez.LIMPO, emptySet(), 11L)

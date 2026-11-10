@@ -41,8 +41,8 @@ class FeatureAuditTest {
         assertFalse(cacheNames.any { it.contains("galeria_org") })
     }
 
-    @Test fun categoriasIncluemGemido() {
-        assertTrue(Categoria.entries.any { it.name == "GEMIDO" })
+    @Test fun categoriasSemGemidoMasComAsDemais() {
+        assertEquals(listOf("PEITO", "BUNDA", "BUCETA", "ANUS"), Categoria.entries.map { it.name })
     }
 
     @Test fun modoAjustarDefaultLabel() {

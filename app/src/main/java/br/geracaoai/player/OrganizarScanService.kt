@@ -42,25 +42,30 @@ class OrganizarScanService : Service() {
         fun start(ctx: Context, bucketId: String? = null) {
             val i = Intent(ctx, OrganizarScanService::class.java).setAction(ACTION_START)
             if (bucketId != null) i.putExtra("bucketId", bucketId)
-            ContextCompat.startForegroundService(ctx, i)
+            iniciarSeguro(ctx, i)
         }
         fun pause(ctx: Context) {
-            ContextCompat.startForegroundService(
-                ctx, Intent(ctx, OrganizarScanService::class.java).setAction(ACTION_PAUSE),
-            )
+            iniciarSeguro(ctx, Intent(ctx, OrganizarScanService::class.java).setAction(ACTION_PAUSE))
         }
         fun stop(ctx: Context) {
-            ctx.startService(Intent(ctx, OrganizarScanService::class.java).setAction(ACTION_STOP))
+            runCatching { ctx.startService(Intent(ctx, OrganizarScanService::class.java).setAction(ACTION_STOP)) }
+                .onFailure { Log.w(TAG, "stop: serviço não pôde ser acionado", it) }
+        }
+        /**
+         * Android 12+ (ForegroundServiceStartNotAllowedException) / 14+ / 15 e restrições de segundo plano da Samsung
+         * podem negar a subida do serviço quando o app acabou de ir para segundo plano. Nunca derruba o chamador:
+         * o estado "ativo" fica salvo e a varredura retoma quando o app voltar.
+         */
+        fun iniciarSeguro(ctx: Context, i: Intent): Boolean = try {
+            ContextCompat.startForegroundService(ctx, i); true
+        } catch (e: Throwable) {
+            Log.w(TAG, "startForegroundService negado — retoma depois", e); false
         }
         /** Cede à análise por vídeo sem marcar pausa do usuário. */
         fun yieldToAnalise(ctx: Context) {
             // Só acorda o :scan se a varredura estiver marcada ativa ou o heartbeat vivo.
             if (!OrgPrefs(ctx).ativo && !Exclusao.scanRodando(ctx)) return
-            runCatching {
-                ContextCompat.startForegroundService(
-                    ctx, Intent(ctx, OrganizarScanService::class.java).setAction(ACTION_YIELD),
-                )
-            }
+            iniciarSeguro(ctx, Intent(ctx, OrganizarScanService::class.java).setAction(ACTION_YIELD))
         }
     }
 

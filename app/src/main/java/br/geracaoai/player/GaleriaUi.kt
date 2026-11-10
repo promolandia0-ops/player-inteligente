@@ -198,8 +198,18 @@ fun Biblioteca(
     val orgPausado = orgSnap.b
     val orgProg = orgSnap.c
     val orgTxt = orgSnap.d
+    // Assinatura barata do DB: só relê todas as linhas + embeddings quando algo mudou (antes: a cada 800 ms,
+    // inclusive com o player aberto e com a varredura parada). Recarga forçada a cada ~12 s por segurança.
+    val dbAss = remember { arrayOf("") }
+    val dbSemRecarga = remember { intArrayOf(0) }
     LaunchedEffect(orgPrefsTick.intValue, orgInfo?.state) {
-        val (mapa, emb) = withContext(Dispatchers.IO) { db.todosPorChaveEstavel() to db.embeddings() }
+        if (!ativa) return@LaunchedEffect   // player por cima: não compete com a reprodução
+        val lido = withContext(Dispatchers.IO) {
+            val ass = runCatching { db.assinatura() }.getOrDefault("")
+            if (ass.isNotEmpty() && ass == dbAss[0] && ++dbSemRecarga[0] < 15) null
+            else { dbAss[0] = ass; dbSemRecarga[0] = 0; db.todosPorChaveEstavel() to db.embeddings() }
+        } ?: return@LaunchedEffect
+        val (mapa, emb) = lido
         // Refresh a cada 800 ms: só troca a instância se mudou (FloatArray não tem equals →
         // senão a ordem Semelhança, O(n²), recalculava na thread da UI o tempo todo).
         if (mapa != orgMap) orgMap = mapa
@@ -305,8 +315,13 @@ fun Biblioteca(
                 onContinuarOrg = { OrganizarWorker.continuar(ctx) },
                 onCancelarOrg = { OrganizarWorker.cancelar(ctx) },
                 onReanalisar = {
-                    runCatching { GaleriaDb(ctx).limpar(); OrganizarWorker.iniciar(ctx) }
-                    orgTick++
+                    // DB fora da thread principal (antes: delete na UI + conexão nova nunca fechada).
+                    escopo.launch {
+                        withContext(Dispatchers.IO) { runCatching { db.limpar() } }
+                        runCatching { OrganizarWorker.iniciar(ctx) }
+                        dbAss[0] = ""
+                        orgTick++
+                    }
                 },
                 gridState = scrollIntel,
             )

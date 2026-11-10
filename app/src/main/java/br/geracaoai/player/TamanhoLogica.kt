@@ -7,9 +7,11 @@ package br.geracaoai.player
 object TamanhoLogica {
     const val LIMIAR = 0.45f
     const val FACE_FEMALE = 1
+    const val FEMALE_GENITALIA_COVERED = 0
     const val BUTTOCKS_EXPOSED = 2
     const val FEMALE_BREAST_EXPOSED = 3
     const val FEMALE_GENITALIA_EXPOSED = 4
+    const val ANUS_EXPOSED = 6
     const val FEET_EXPOSED = 7
     const val BELLY_COVERED = 8
     const val FEET_COVERED = 9
@@ -28,7 +30,7 @@ object TamanhoLogica {
         FEMALE_BREAST_EXPOSED, FEMALE_BREAST_COVERED,
         BELLY_EXPOSED, BELLY_COVERED,
         BUTTOCKS_EXPOSED, BUTTOCKS_COVERED,
-        FEMALE_GENITALIA_EXPOSED,
+        FEMALE_GENITALIA_EXPOSED, FEMALE_GENITALIA_COVERED, ANUS_EXPOSED,
         FEET_EXPOSED, FEET_COVERED,
         ARMPITS_EXPOSED, ARMPITS_COVERED,
     )
@@ -82,13 +84,17 @@ object TamanhoLogica {
         val feet = partes.filter { it.classe == FEET_EXPOSED || it.classe == FEET_COVERED }
             .maxByOrNull { it.caixa.sc }?.caixa
         // Estima extensão vertical cabeça↔pés.
+        // Cabeça ≈ 1/7,5 do corpo; a caixa do rosto ≈ 0,75 da cabeça → corpo ≈ 8–10× a altura do rosto.
         if (face != null && feet == null) {
-            val down = face.h * 3.2f
-            y1 = maxOf(y1, face.y1 + down)
+            y1 = maxOf(y1, face.y0 + face.h * 8f)
+        }
+        if (face != null) {
+            // Largura mínima de ombros/braços ao redor do rosto (mulher pequena/distante: só o rosto foi detectado).
+            x0 = minOf(x0, face.cx - face.w * 1.6f)
+            x1 = maxOf(x1, face.cx + face.w * 1.6f)
         }
         if (feet != null && face == null) {
-            val up = feet.h * 3.5f
-            y0 = minOf(y0, feet.y0 - up)
+            y0 = minOf(y0, feet.y0 - feet.h * 10f)
         }
         if (face != null && feet != null) {
             y0 = minOf(y0, face.y0)
@@ -131,7 +137,9 @@ object TamanhoLogica {
         contH: Float = viewH,
     ): ZoomAlvo? {
         if (viewW < 8f || viewH < 8f || contW < 8f || contH < 8f) return null
-        if (classesDistintas(partes) < minPartesDistintas) return null
+        // Mulher pequena/distante: às vezes só o rosto aparece → aceita, estimando o corpo todo a partir dele.
+        val soRostoOk = partes.any { it.classe == FACE_FEMALE }
+        if (classesDistintas(partes) < minPartesDistintas && !soRostoOk) return null
         val box = caixaCorpoPadded(partes, padding) ?: return null
         val frac = maxOf(box.w, box.h)
         // Já ocupa boa parte do quadro → não amplia (volta a 1x).
@@ -184,6 +192,38 @@ object TamanhoLogica {
         if (!cornersOk(z, px, py)) return ZoomAlvo(1f, 0f, 0f)
         return ZoomAlvo(z, px, py)
     }
+
+    /**
+     * Converte caixas do detector (normalizadas no canvas S×S onde o bitmap de [bmpW]×[bmpH] foi encaixado
+     * com o maior lado = S, canto superior esquerdo) para coordenadas normalizadas do quadro/região.
+     * [regiao] = região do quadro (normalizada) de onde o bitmap saiu; quadro todo = (0,0,1,1).
+     */
+    fun paraQuadro(partes: List<CaixaParte>, bmpW: Int, bmpH: Int, regiao: RectN = RectN(0f, 0f, 1f, 1f), s: Float = 320f): List<CaixaParte> {
+        if (bmpW <= 0 || bmpH <= 0) return emptyList()
+        val esc = s / maxOf(bmpW, bmpH)
+        val fx = s / (bmpW * esc); val fy = s / (bmpH * esc)
+        return partes.map { p ->
+            val c = p.caixa
+            val cx = regiao.x0 + (c.cx * fx) * regiao.w
+            val cy = regiao.y0 + (c.cy * fy) * regiao.h
+            val w = c.w * fx * regiao.w
+            val h = c.h * fy * regiao.h
+            CaixaParte(p.classe, Caixa(c.sc, cx, cy, w, h))
+        }
+    }
+
+    /** Regiões 2×2 sobrepostas (cada uma com [frac] do quadro) p/ achar mulher pequena/distante. */
+    fun ladrilhos(frac: Float = 0.6f): List<RectN> {
+        val o = 1f - frac
+        return listOf(RectN(0f, 0f, frac, frac), RectN(o, 0f, 1f, frac), RectN(0f, o, frac, 1f), RectN(o, o, 1f, 1f))
+    }
+
+    /**
+     * Onde um ponto normalizado (nx,ny) do vídeo aparece no container após o graphicsLayer
+     * (escala [zoom] no centro da view + translação [panX],[panY]; view centrada no container).
+     */
+    fun projetar(nx: Float, ny: Float, viewW: Float, viewH: Float, contW: Float, contH: Float, zoom: Float, panX: Float, panY: Float): Pair<Float, Float> =
+        ((nx - 0.5f) * viewW * zoom + panX + contW / 2f) to ((ny - 0.5f) * viewH * zoom + panY + contH / 2f)
 
     /** Histerese: só atualiza se zoom mudar >15% ou pan mudar bastante. */
     fun deveAtualizarAlvo(atual: ZoomAlvo?, novo: ZoomAlvo, limiarZoom: Float = 0.15f): Boolean {

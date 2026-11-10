@@ -248,14 +248,28 @@ class MainActivity : ComponentActivity() {
     fun brilho(v: Float) { window.attributes = window.attributes.apply { screenBrightness = v.coerceIn(0.01f, 1f) } }
 }
 
+/** Cache em memória das miniaturas (já reduzidas): rolar de volta não decodifica de novo. Limite ~1/16 do heap. */
+object ThumbCache {
+    private val cache = object : android.util.LruCache<String, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 16L).coerceIn(4L shl 20, 48L shl 20).toInt()
+    ) { override fun sizeOf(k: String, v: Bitmap) = v.byteCount.coerceAtLeast(1) }
+    fun chave(uri: Uri, tempoMs: Long?, w: Int, h: Int) = "$uri|${tempoMs ?: -1}|${w}x$h"
+    fun obter(k: String): Bitmap? = cache.get(k)?.takeIf { !it.isRecycled }
+    fun guardar(k: String, b: Bitmap) { if (!b.isRecycled) cache.put(k, b) }
+    fun limpar() = cache.evictAll()
+    fun tamanhoMax() = cache.maxSize()
+}
+
 @Composable
 fun Thumb(uri: Uri, modifier: Modifier, tempoMs: Long? = null, w: Int = 480, h: Int = 270) {
     val ctx = LocalContext.current
-    val bmp by produceState<Bitmap?>(null, uri, tempoMs) {
+    val ck = remember(uri, tempoMs, w, h) { ThumbCache.chave(uri, tempoMs, w, h) }
+    val bmp by produceState<Bitmap?>(ThumbCache.obter(ck), ck) {
+        ThumbCache.obter(ck)?.let { value = it; return@produceState }
         value = withContext(Dispatchers.IO) { runCatching {
             if (tempoMs == null) ctx.contentResolver.loadThumbnail(uri, Size(w, h), null)
             else MediaMetadataRetriever().run { try { setDataSource(ctx, uri); getScaledFrameAtTime(tempoMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, w, h) } finally { release() } }
-        }.getOrNull() }
+        }.getOrNull()?.also { ThumbCache.guardar(ck, it) } }
     }
     Box(modifier.background(Color(0xFF15121D)), contentAlignment = Alignment.Center) {
         Crossfade(bmp, animationSpec = tween(250), label = "t") { b ->
@@ -360,6 +374,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var brilho by remember { mutableFloatStateOf(act.window.attributes.screenBrightness.takeIf { it >= 0 } ?: 0.5f) }
     var hud by remember { mutableStateOf<String?>(null) }
     var menuPlayer by remember { mutableStateOf(false) }
+    var momentosAberto by remember { mutableStateOf(false) }
     var telaOff by remember { mutableStateOf(prefs.telaDesligada) }
     var zoomAuto by remember { mutableStateOf(prefs.zoomAuto) }
     var zoomManual by remember(video.uri) { mutableStateOf(false) }
@@ -408,7 +423,9 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         withContext(Dispatchers.IO) { Exclusao.playerAberto(ctx); runCatching { if (OrgPrefs(ctx).ativo) OrganizarScanService.yieldToAnalise(ctx) } }
         while (true) { delay(4000); withContext(Dispatchers.IO) { Exclusao.playerAberto(ctx) } }
     }
-    DisposableEffect(Unit) { onDispose { Exclusao.playerFechado(ctx); Exclusao.retomarGaleriaSePreciso(ctx) } }
+    // onDispose roda na thread principal: o WorkManager.get() (bloqueante) do "retomar" vai para outra thread;
+    // o lock do player é removido na hora (barato) para não apagar o lock de um player novo que abra em seguida.
+    DisposableEffect(Unit) { onDispose { val app = ctx.applicationContext; Exclusao.playerFechado(app); Thread { Exclusao.retomarGaleriaSePreciso(app) }.start() } }
     val chavePos = remember(video.uri) { VideosMedia.chaveEstavel(video.uri.toString()) }
     DisposableEffect(video.uri) {
         // Sempre reentra imersivo a cada abertura (evita status bar por cima nas 2ª+ aberturas)
@@ -461,21 +478,47 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
         val historico = ArrayDeque<List<TamanhoLogica.CaixaParte>>(4)
         var ultimo: TamanhoLogica.ZoomAlvo? = null
         var semCorpo = 0
+        var ciclo = 0
+        var posParado = -1L
         try {
             while (true) {
                 delay(700)
                 if (!zoomAuto || zoomManual) break
-                if (AnaliseWorker.rodando(ctx)) continue
+                // Pausado e sem mudar de posição: nada novo para enquadrar (poupa CPU/bateria).
+                if (!player.isPlaying) { val pp = player.currentPosition; if (pp == posParado) continue; posParado = pp } else posParado = -1L
+                // Consulta ao WorkManager fora da thread principal (antes bloqueava a UI a cada ciclo).
+                if (withContext(Dispatchers.IO) { AnaliseWorker.rodando(ctx) }) continue
                 val tv = textureView ?: continue
                 if (!tv.isAvailable) continue
                 val cw = viewCw; val ch = viewCh
                 val vw = vidW; val vh = vidH
                 if (vw < 8f || vh < 8f || cw < 8f || ch < 8f) continue
-                val bmp = runCatching { tv.getBitmap(320, 320) }.getOrNull() ?: continue
+                // Mantém a proporção do vídeo (antes esticava p/ 320×320 e o detector via o corpo deformado).
+                val esc = 800f / maxOf(vw, vh)
+                val bw = (vw * esc).toInt().coerceAtLeast(16); val bh = (vh * esc).toInt().coerceAtLeast(16)
+                val bmp = runCatching { tv.getBitmap(bw, bh) }.getOrNull() ?: continue
+                ciclo++
+                val tentarLadrilhos = ciclo % 2 == 0
                 val partes = withContext(Dispatchers.Default) {
                     try {
                         if (det == null) det = Detector(ctx, false)
-                        det!!.caixasCorpo(bmp, TamanhoLogica.LIMIAR)
+                        val d = det!!
+                        var r = TamanhoLogica.paraQuadro(d.caixasCorpo(bmp, TamanhoLogica.LIMIAR), bmp.width, bmp.height)
+                        if (r.isEmpty() && tentarLadrilhos) {
+                            // Nada no quadro inteiro: procura mulher pequena/distante em 4 recortes ampliados.
+                            val acc = ArrayList<TamanhoLogica.CaixaParte>()
+                            for (rg in TamanhoLogica.ladrilhos()) {
+                                val x = (rg.x0 * bmp.width).toInt().coerceIn(0, bmp.width - 2)
+                                val y = (rg.y0 * bmp.height).toInt().coerceIn(0, bmp.height - 2)
+                                val w = (rg.w * bmp.width).toInt().coerceIn(2, bmp.width - x)
+                                val h = (rg.h * bmp.height).toInt().coerceIn(2, bmp.height - y)
+                                val rec = Bitmap.createBitmap(bmp, x, y, w, h)
+                                try { acc += TamanhoLogica.paraQuadro(d.caixasCorpo(rec, TamanhoLogica.LIMIAR), w, h, rg) }
+                                finally { if (rec !== bmp && !rec.isRecycled) rec.recycle() }
+                            }
+                            r = acc
+                        }
+                        r
                     } catch (_: Throwable) {
                         runCatching { det?.close() }; det = null
                         emptyList()
@@ -497,7 +540,6 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                     continue
                 }
                 val uniao = TamanhoLogica.uniaoTemporal(historico.toList())
-                if (TamanhoLogica.classesDistintas(uniao) < 2) continue
                 val alvo = TamanhoLogica.enquadrarCorpoInteiro(uniao, vw, vh, contW = cw, contH = ch) ?: continue
                 if (!TamanhoLogica.deveAtualizarAlvo(ultimo, alvo)) continue
                 ultimo = alvo
@@ -579,6 +621,44 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     fun resetZoom() { zoom = 1f; pan = Offset.Zero }
 
     BackHandler { voltar() }
+
+    if (momentosAberto) {
+        val a = analise?.first
+        val analisado = a != null && a.tempos.isNotEmpty()
+        val limiarM = prefs.limiar
+        // Só lê a análise já salva; calcula fora da thread principal e guarda em cache.
+        val momentos by produceState<List<Momento>?>(null, a, limiarM) {
+            value = if (a == null || a.tempos.isEmpty()) emptyList()
+            else withContext(Dispatchers.Default) { runCatching { MelhoresMomentos.obter(ctx, chave, a, limiarM) }.getOrDefault(emptyList()) }
+        }
+        AlertDialog(
+            onDismissRequest = { momentosAberto = false },
+            title = { Text("Melhores momentos") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    when {
+                        !analisado -> Text("Analise o vídeo primeiro")
+                        momentos == null -> Text("Calculando…")
+                        momentos!!.isEmpty() -> Text("Nenhum momento marcado neste vídeo")
+                        else -> {
+                            if (a!!.parcial) Text("Análise parcial", style = MaterialTheme.typography.labelSmall)
+                            momentos!!.forEach { m ->
+                                TextButton(onClick = {
+                                    hap.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    player.seekTo(m.seekMs); player.play(); momentosAberto = false
+                                }) { Text("${MelhoresMomentos.formatar(m.inicioMs)} – ${MelhoresMomentos.formatar(m.fimMs)}  ·  ${m.categoria.rotulo}") }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (!analisado) TextButton(onClick = { momentosAberto = false; buscar() }) { Text("Analisar") }
+                else TextButton(onClick = { momentosAberto = false }) { Text("Fechar") }
+            },
+            dismissButton = if (!analisado) ({ TextButton(onClick = { momentosAberto = false }) { Text("Fechar") } }) else null,
+        )
+    }
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black).clipToBounds()) {
         val d = LocalDensity.current
@@ -698,6 +778,10 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                                     hud = if (zoomAuto) "Zoom automático ligado" else "Zoom automático desligado"
                                     menuPlayer = false
                                 },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Melhores momentos") },
+                                onClick = { menuPlayer = false; momentosAberto = true },
                             )
                         }
                     }

@@ -134,13 +134,6 @@ class AnaliseWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                     }
                 }
             }
-            runCatching {
-                setProgress(workDataOf("p" to 0.95f, "uri" to uri.toString(), "txt" to "Áudio…"))
-                AnaliseProgresso.set(ctx, uri.toString(), 0.95f)
-                nm.notify(42, notif(95, "Gemido…"))
-                val g = Gemido.analisar(ctx, uri, dur, intervalo)
-                sc[Categoria.GEMIDO] = FloatArray(n) { i -> if (i < g.size) g[i] else 0f }
-            }.onFailure { android.util.Log.w(TAG, "gemido", it) }
 
             Cache.salvar(ctx, chave, Analise(dur, tempos, sc), intervalo)
             AnaliseProgresso.set(ctx, uri.toString(), 1f)

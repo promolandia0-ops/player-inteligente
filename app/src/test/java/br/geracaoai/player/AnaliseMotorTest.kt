@@ -27,7 +27,6 @@ class AnaliseMotorTest {
                 Categoria.entries.associateWith { c ->
                     when (c) {
                         Categoria.PEITO -> if (i in 5..8) 0.8f else 0.1f
-                        Categoria.GEMIDO -> 0f
                         else -> 0.05f
                     }
                 }

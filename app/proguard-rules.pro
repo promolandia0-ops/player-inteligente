@@ -5,10 +5,6 @@
 -keepnames class ai.onnxruntime.**
 -dontwarn ai.onnxruntime.**
 
-# TensorFlow Lite (YAMNet / Gemido)
--keep class org.tensorflow.** { *; }
--dontwarn org.tensorflow.**
-
 # Keep all native methods (JNI)
 -keepclasseswithmembernames,includedescriptorclasses class * {
     native <methods>;
