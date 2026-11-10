@@ -153,6 +153,12 @@ fun Biblioteca(
         if (!scrollVideos.isScrollInProgress && !scrollAlbuns.isScrollInProgress && !scrollIntel.isScrollInProgress && !scrollPasta.isScrollInProgress) guardarScrolls()
     }
 
+    // Pessoas (v1.3.20): tela própria + pasta de uma pessoa (reaproveita PastaVideosTela). Não mexe nas outras abas.
+    var pessoasAberto by rememberSaveable { mutableStateOf(false) }
+    var pessoaPasta by remember { mutableStateOf<Pasta?>(null) }
+    val gridPessoa = rememberLazyGridState()
+    BackHandler(enabled = ativa && pessoasAberto) { if (pessoaPasta != null) pessoaPasta = null else pessoasAberto = false }
+
     var recupMsg by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(temPerm, orgTick) {
         if (!temPerm) { pedir.launch(perm); return@LaunchedEffect }
@@ -268,6 +274,16 @@ fun Biblioteca(
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         when {
+            pessoasAberto && pessoaPasta != null -> PastaVideosTela(
+                pasta = pessoaPasta!!, sts = sts, avs = avs, busca = busca, onBusca = { busca = it },
+                ordem = ordemAtual, onOrdem = { o -> ordem = o.name }, menuOrdem = menuOrdem, onMenuOrdem = { menuOrdem = it },
+                onVoltar = { pessoaPasta = null; busca = "" },
+                onAbrir = { onAbrir(it) },
+                orgMap = orgMap, embMap = embMap, analiseProg = analiseProg, filtroCats = false,
+                cols = colsVideos, onCols = { colsVideos = it.coerceIn(3, 5) },
+                gridState = gridPessoa,
+            )
+            pessoasAberto -> PessoasTela(videos ?: emptyList(), onVoltar = { pessoasAberto = false }, onAbrir = { pessoaPasta = it })
             pastaSel != null -> PastaVideosTela(
                 pasta = pastaSel!!, sts = sts, avs = avs, busca = busca, onBusca = { busca = it },
                 ordem = ordemAtual, onOrdem = { o -> ordem = o.name; pastaId?.let { OrdemPrefs.set(ctx, it, o) } }, menuOrdem = menuOrdem, onMenuOrdem = { menuOrdem = it },
@@ -303,6 +319,7 @@ fun Biblioteca(
                 cols = colsAlbuns, onCols = { colsAlbuns = it.coerceIn(2, 4) },
                 gridState = scrollAlbuns, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
                 recentes = recentes, onAbrir = { guardarScrolls(); onAbrir(it) },
+                onPessoas = { guardarScrolls(); pessoasAberto = true; pessoaPasta = null },
             )
             abaAtual == AbaGaleria.INTELIGENTE -> AbaInteligente(
                 smart = albumsVirtuais, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
@@ -343,7 +360,7 @@ fun Biblioteca(
             }
         }
 
-        if (pastaSel == null && ativa) {
+        if (pastaSel == null && !pessoasAberto && ativa) {
             BarraInferiorSamsung(
                 aba = abaAtual,
                 onAba = { nova ->
@@ -471,7 +488,7 @@ private fun AbaVideos(
 private fun AbaAlbuns(
     pastas: List<Pasta>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean, onPermitir: () -> Unit,
     onPasta: (Pasta) -> Unit, cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState, onAbrirArquivo: () -> Unit,
-    recentes: List<Video> = emptyList(), onAbrir: (Video) -> Unit = {},
+    recentes: List<Video> = emptyList(), onAbrir: (Video) -> Unit = {}, onPessoas: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().pointerInput(cols) {
         detectTransformGestures { _, _, zoom, _ ->
@@ -508,6 +525,7 @@ private fun AbaAlbuns(
             modifier = Modifier.fillMaxSize(),
         ) {
             if (recentes.isNotEmpty()) item(key = "__recentes", span = { GridItemSpan(maxLineSpan) }) { LinhaRecentes(recentes, onAbrir) }
+            item(key = "__pessoas", span = { GridItemSpan(maxLineSpan) }) { CartaPessoasEntrada(onPessoas) }
             items(pastas.size, key = { pastas[it].id }) { i ->
                 CartaAlbumSamsung(pastas[i]) { onPasta(pastas[i]) }
             }

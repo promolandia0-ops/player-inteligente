@@ -15,3 +15,7 @@ Player de vídeo Android 100% offline (Kotlin + Jetpack Compose + Media3/ExoPlay
 - Cache JSON por vídeo (uri+tamanho+mtime); a sensibilidade muda sem reanalisar; tamanhos < 1 MB em KB
 
 Build: `./gradlew testReleaseUnitTest assembleRelease` (keystore fora do git em `/workspace/player-inteligente-keystore/`).
+
+## Pessoas (v1.3.21)
+Agrupa vídeos por rosto, 100% offline, módulo isolado (`Rosto*.kt`, `Pessoas*.kt`, `pessoas.db`). Modelos do OpenCV Zoo:
+YuNet `face_detection_yunet_2023mar` (MIT) e SFace `face_recognition_sface_2021dec_int8` (Apache-2.0).
