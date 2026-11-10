@@ -53,7 +53,7 @@ class GaleriaDbRecoveryTest {
 
     @Test fun aposLimparNudeLimpoSobreviveECasa() {
         db.salvar("content://media/external_primary/video/media/7", ClassifNudez.NUDE, setOf(Categoria.PEITO), 1L)
-        db.salvar("content://media/external_primary/video/media/8", ClassifNudez.LIMPO, emptySet(), 1L)
+        db.salvar("content://media/external_primary/video/media/8", ClassifNudez.LIMPO, emptySet(), 1L, scanV = ClassifUnica.VERSAO_ESTRITA, frames = 30)   // varredura rigorosa (v1.3.23)
         db.limparNude() // bug v1.3.0
         assertEquals(0, db.contagens()[ClassifNudez.NUDE] ?: 0)
         assertEquals(1, db.contagens()[ClassifNudez.LIMPO] ?: 0)
@@ -64,7 +64,7 @@ class GaleriaDbRecoveryTest {
     }
 
     @Test fun mtimeDiferenteAindaContaFeito() {
-        db.salvar("content://media/external/video/media/3", ClassifNudez.LIMPO, emptySet(), 100L)
+        db.salvar("content://media/external/video/media/3", ClassifNudez.LIMPO, emptySet(), 100L, scanV = ClassifUnica.VERSAO_ESTRITA, frames = 30)
         val feitos = OrgRecuperacao.mapaFeitos(db)
         assertTrue(OrgRecuperacao.estaFeito(feitos, "content://media/external/video/media/3"))
     }

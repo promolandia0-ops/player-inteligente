@@ -66,7 +66,9 @@ object OrgRecuperacao {
     fun mapaFeitos(db: GaleriaDb): MutableMap<String, ClassifNudez> {
         val out = HashMap<String, ClassifNudez>()
         for ((u, r) in db.todos()) {
-            if (r.classif == ClassifNudez.NUDE || r.classif == ClassifNudez.LIMPO || r.classif == ClassifNudez.ERRO) {
+            // v1.3.23: LIMPO sem varredura rigorosa (linha antiga/fraca) NÃO conta como feito → é re-varrido.
+            val limpoFraco = r.classif == ClassifNudez.LIMPO && r.scanV < ClassifUnica.VERSAO_ESTRITA
+            if (!limpoFraco && (r.classif == ClassifNudez.NUDE || r.classif == ClassifNudez.LIMPO || r.classif == ClassifNudez.ERRO)) {
                 val k = VideosMedia.chaveEstavel(u)
                 val ant = out[k]
                 if (ant == null || ant == ClassifNudez.ERRO || (ant == ClassifNudez.LIMPO && r.classif == ClassifNudez.NUDE)) {

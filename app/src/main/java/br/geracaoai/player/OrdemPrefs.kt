@@ -13,6 +13,9 @@ enum class Ordenacao(val rotulo: String) {
     MENOR_RES("Menor resolução"),
     NOME("Nome A-Z"),
     SEMELHANCA("Semelhança"),
+    MAIS_EXPLICITO("Mais explícito"),
+    /** Só na pasta Favoritos: mais recentemente favoritado primeiro (a lista já vem nessa ordem). */
+    FAVORITADOS("Favoritados recentemente"),
 }
 
 object OrdemPrefs {

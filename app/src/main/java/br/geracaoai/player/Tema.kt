@@ -8,6 +8,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -69,6 +70,21 @@ fun Modifier.toque(enabled: Boolean = true, onClick: () -> Unit): Modifier {
     val s by animateFloatAsState(if (pressed) 0.92f else 1f, spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMedium), label = "s")
     val hap = LocalHapticFeedback.current
     return this.scale(s).clickable(src, null, enabled) { hap.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }
+}
+
+/** Como [toque], com toque longo (ex.: menu de favoritar nos tiles). */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+fun Modifier.toqueLongo(onLongClick: () -> Unit, onClick: () -> Unit): Modifier {
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val s by animateFloatAsState(if (pressed) 0.92f else 1f, spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMedium), label = "sl")
+    val hap = LocalHapticFeedback.current
+    return this.scale(s).combinedClickable(
+        interactionSource = src, indication = null,
+        onLongClick = { hap.performHapticFeedback(HapticFeedbackType.LongPress); onLongClick() },
+        onClick = { hap.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
+    )
 }
 
 @Composable

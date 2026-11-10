@@ -10,10 +10,12 @@ enum class ClassifNudez { NUDE, LIMPO, PENDENTE, ERRO }
 data class ResultadoOrg(
     val uri: String, val classif: ClassifNudez, val cats: Set<Categoria>, val mtime: Long,
     val areaPeito: Float = 0f, val areaBunda: Float = 0f, val areaBuceta: Float = 0f,
+    /** Versão da varredura que gravou a linha (0 = antiga/fraca) e quadros lidos com sucesso. Ver [ClassifUnica]. */
+    val scanV: Int = 0, val frames: Int = 0,
 )
 
 /** DB local de álbuns virtuais — não move/copia arquivos. Persistência por vídeo. */
-class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeria_org.db", null, 4) {
+class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeria_org.db", null, 5) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE IF NOT EXISTS org(
@@ -25,7 +27,9 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
               emb BLOB,
               area_peito REAL NOT NULL DEFAULT 0,
               area_bunda REAL NOT NULL DEFAULT 0,
-              area_buceta REAL NOT NULL DEFAULT 0
+              area_buceta REAL NOT NULL DEFAULT 0,
+              scan_v INTEGER NOT NULL DEFAULT 0,
+              frames INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_org_classif ON org(classif)")
@@ -42,23 +46,30 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
             runCatching { db.execSQL("ALTER TABLE org ADD COLUMN area_bunda REAL NOT NULL DEFAULT 0") }
             runCatching { db.execSQL("ALTER TABLE org ADD COLUMN area_buceta REAL NOT NULL DEFAULT 0") }
         }
+        if (o < 5) {
+            // v1.3.23: linhas antigas ficam scan_v=0 → "LIMPO" sem prova (não vira Sem nudez; é re-varrida em segundo plano).
+            runCatching { db.execSQL("ALTER TABLE org ADD COLUMN scan_v INTEGER NOT NULL DEFAULT 0") }
+            runCatching { db.execSQL("ALTER TABLE org ADD COLUMN frames INTEGER NOT NULL DEFAULT 0") }
+        }
     }
 
     fun salvar(
         uri: String, classif: ClassifNudez, cats: Set<Categoria>, mtime: Long,
         areaPeito: Float = 0f, areaBunda: Float = 0f, areaBuceta: Float = 0f,
+        scanV: Int = 0, frames: Int = 0,
     ) {
         writableDatabase.insertWithOnConflict("org", null, ContentValues().apply {
             put("uri", uri); put("classif", classif.name)
             put("cats", cats.joinToString(",") { it.name })
             put("mtime", mtime); put("scanned_at", System.currentTimeMillis())
             put("area_peito", areaPeito); put("area_bunda", areaBunda); put("area_buceta", areaBuceta)
+            put("scan_v", scanV); put("frames", frames)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     fun obter(uri: String): ResultadoOrg? =
         readableDatabase.rawQuery(
-            "SELECT uri,classif,cats,mtime,area_peito,area_bunda,area_buceta FROM org WHERE uri=?", arrayOf(uri),
+            "SELECT uri,classif,cats,mtime,area_peito,area_bunda,area_buceta,scan_v,frames FROM org WHERE uri=?", arrayOf(uri),
         ).use { c ->
             if (!c.moveToFirst()) return null
             ler(c)
@@ -67,7 +78,7 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
     fun todos(): Map<String, ResultadoOrg> {
         val m = LinkedHashMap<String, ResultadoOrg>()
         readableDatabase.rawQuery(
-            "SELECT uri,classif,cats,mtime,area_peito,area_bunda,area_buceta FROM org", null,
+            "SELECT uri,classif,cats,mtime,area_peito,area_bunda,area_buceta,scan_v,frames FROM org", null,
         ).use { c ->
             while (c.moveToNext()) { val r = ler(c); m[r.uri] = r }
         }
@@ -81,7 +92,9 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
             val k = VideosMedia.chaveEstavel(u)
             // Prefere NUDE/LIMPO se houver colisão
             val ant = m[k]
-            if (ant == null || ant.classif == ClassifNudez.ERRO || ant.classif == ClassifNudez.PENDENTE) m[k] = r
+            // Colisão (external × external_primary): NUDE vence sempre (um vídeo nunca fica LIMPO por causa da linha duplicada).
+            if (ant == null || ant.classif == ClassifNudez.ERRO || ant.classif == ClassifNudez.PENDENTE ||
+                (r.classif == ClassifNudez.NUDE && ant.classif != ClassifNudez.NUDE)) m[k] = r
         }
         return m
     }
@@ -132,11 +145,12 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
         data class Row(
             val old: String, val neu: String, val classif: String, val cats: String, val mtime: Long,
             val ap: Float, val ab: Float, val abu: Float, val emb: ByteArray?, val scanned: Long,
+            val sv: Int, val fr: Int,
         )
         val db = writableDatabase
         val rows = ArrayList<Row>()
         db.rawQuery(
-            "SELECT uri,classif,cats,mtime,area_peito,area_bunda,area_buceta,emb,scanned_at FROM org", null,
+            "SELECT uri,classif,cats,mtime,area_peito,area_bunda,area_buceta,emb,scanned_at,scan_v,frames FROM org", null,
         ).use { c ->
             val iEmb = c.getColumnIndex("emb")
             val iSc = c.getColumnIndex("scanned_at")
@@ -149,6 +163,7 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
                     c.getFloat(4), c.getFloat(5), c.getFloat(6),
                     if (iEmb >= 0 && !c.isNull(iEmb)) c.getBlob(iEmb) else null,
                     if (iSc >= 0 && !c.isNull(iSc)) c.getLong(iSc) else 0L,
+                    c.getInt(c.getColumnIndexOrThrow("scan_v")), c.getInt(c.getColumnIndexOrThrow("frames")),
                 )
             }
         }
@@ -163,7 +178,7 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
                 val cv = ContentValues().apply {
                     put("uri", r.neu); put("classif", r.classif); put("cats", r.cats); put("mtime", r.mtime)
                     put("area_peito", r.ap); put("area_bunda", r.ab); put("area_buceta", r.abu)
-                    put("scanned_at", r.scanned)
+                    put("scanned_at", r.scanned); put("scan_v", r.sv); put("frames", r.fr)
                     if (r.emb != null) put("emb", r.emb)
                 }
                 when {
@@ -180,7 +195,7 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
                             db.update("org", ContentValues().apply {
                                 put("classif", r.classif); put("cats", r.cats); put("mtime", r.mtime)
                                 put("area_peito", r.ap); put("area_bunda", r.ab); put("area_buceta", r.abu)
-                                put("scanned_at", r.scanned)
+                                put("scanned_at", r.scanned); put("scan_v", r.sv); put("frames", r.fr)
                                 if (r.emb != null) put("emb", r.emb)
                             }, "uri=?", arrayOf(r.neu))
                         }
@@ -201,6 +216,33 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
         readableDatabase.rawQuery(
             "SELECT COUNT(*), COALESCE(SUM(scanned_at),0), COALESCE(SUM(emb IS NOT NULL),0), COALESCE(SUM(LENGTH(cats)),0), COALESCE(SUM(mtime),0) FROM org", null,
         ).use { c -> if (c.moveToFirst()) (0 until 5).joinToString("|") { c.getLong(it).toString() } else "" }
+
+    /** Marca NUDE com categorias SEM apagar a linha (preserva embedding); cria a linha se não existir. */
+    fun promoverNude(uri: String, cats: Set<Categoria>) {
+        val db = writableDatabase
+        val cv = ContentValues().apply { put("classif", ClassifNudez.NUDE.name); put("cats", cats.joinToString(",") { it.name }) }
+        if (db.update("org", cv, "uri=?", arrayOf(uri)) == 0) {
+            cv.put("uri", uri); cv.put("mtime", 0L); cv.put("scanned_at", System.currentTimeMillis())
+            db.insertWithOnConflict("org", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
+        }
+    }
+
+    /** Grava o resultado de uma varredura rigorosa preservando o embedding da linha. */
+    fun gravarVarredura(uri: String, classif: ClassifNudez, cats: Set<Categoria>, mtime: Long, scanV: Int, frames: Int) {
+        val db = writableDatabase
+        val cv = ContentValues().apply {
+            put("classif", classif.name); put("cats", cats.joinToString(",") { it.name }); put("mtime", mtime)
+            put("scanned_at", System.currentTimeMillis()); put("scan_v", scanV); put("frames", frames)
+        }
+        if (db.update("org", cv, "uri=?", arrayOf(uri)) == 0) {
+            cv.put("uri", uri); db.insertWithOnConflict("org", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+    }
+
+    /** Quantas linhas LIMPO ainda não têm varredura rigorosa (precisam de re-verificação). */
+    fun contagemLimpoFraco(versaoEstrita: Int): Int =
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM org WHERE classif='LIMPO' AND scan_v<?", arrayOf(versaoEstrita.toString()))
+            .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 
     fun limpar() { writableDatabase.delete("org", null, null) }
     /** Força reclassificar só os marcados como Putaria (regras mais rígidas na v1.1.2). */
@@ -250,6 +292,8 @@ class GaleriaDb(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "galeri
         if (c.columnCount > 4) c.getFloat(4) else 0f,
         if (c.columnCount > 5) c.getFloat(5) else 0f,
         if (c.columnCount > 6) c.getFloat(6) else 0f,
+        if (c.columnCount > 7) c.getInt(7) else 0,
+        if (c.columnCount > 8) c.getInt(8) else 0,
     )
 }
 

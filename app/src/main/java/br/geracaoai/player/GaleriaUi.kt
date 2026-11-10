@@ -165,7 +165,7 @@ fun Biblioteca(
         val packed = withContext(Dispatchers.IO) {
             val lista = VideosMedia.listar(ctx)
             val r = OrgRecuperacao.rodarSePreciso(ctx, lista)
-            lista to (db.todosPorChaveEstavel() to (db.embeddings() to r))
+            lista to (ClassifUnica.carregarVista(ctx, db, lista) to (db.embeddings() to r))
         }
         val vids = packed.first
         val mapa = packed.second.first
@@ -213,7 +213,7 @@ fun Biblioteca(
         val lido = withContext(Dispatchers.IO) {
             val ass = runCatching { db.assinatura() }.getOrDefault("")
             if (ass.isNotEmpty() && ass == dbAss[0] && ++dbSemRecarga[0] < 15) null
-            else { dbAss[0] = ass; dbSemRecarga[0] = 0; db.todosPorChaveEstavel() to db.embeddings() }
+            else { dbAss[0] = ass; dbSemRecarga[0] = 0; ClassifUnica.carregarVista(ctx, db, videos) to db.embeddings() }
         } ?: return@LaunchedEffect
         val (mapa, emb) = lido
         // Refresh a cada 800 ms: só troca a instância se mudou (FloatArray não tem equals →
@@ -227,27 +227,39 @@ fun Biblioteca(
         if (!ativa) return@produceState
         value = withContext(Dispatchers.IO) { runCatching { HistoricoVistos.resolver(ctx, videos) }.getOrDefault(emptyList()) }
     }
+    // "Mais explícito": pontuações da análise salva — calculadas/lidas do cache fora da UI, só quando essa ordem está ativa.
+    val explMap by produceState(emptyMap<String, Float>(), videos, ordem, ativa) {
+        if (!ativa || ordem != Ordenacao.MAIS_EXPLICITO.name) return@produceState
+        val vs = videos ?: return@produceState
+        value = withContext(Dispatchers.IO) { runCatching { Explicito.carregar(ctx, vs) }.getOrDefault(emptyMap()) }
+    }
+    // Favoritos: carrega do disco fora da UI; a lista (mais recente primeiro, sem arquivos apagados) recalcula quando muda.
+    LaunchedEffect(Unit) { withContext(Dispatchers.IO) { Favoritos.carregar(ctx) } }
+    val favMapa = Favoritos.estado
+    val favVideos by produceState(emptyList<Video>(), videos, favMapa, ativa) {
+        if (!ativa) return@produceState
+        value = withContext(Dispatchers.IO) { runCatching { Favoritos.resolver(ctx, videos, favMapa) }.getOrDefault(emptyList()) }
+    }
+    val favPasta = remember(favVideos) { if (favVideos.isEmpty()) null else Pasta(Favoritos.PASTA_ID, "Favoritos", favVideos) }
     val pastas = remember(videos) { videos?.let { pastasDe(it) } ?: emptyList() }
     val albumsVirtuais = remember(videos, orgMap) {
         val vs = videos ?: return@remember emptyList()
         if (orgMap.isEmpty()) return@remember emptyList()
-        fun res(v: Video) = orgMap[VideosMedia.chaveEstavel(v.uri.toString())] ?: orgMap[v.uri.toString()]
-        val nude = vs.filter { res(it)?.classif == ClassifNudez.NUDE }
-        val limpo = vs.filter { res(it)?.classif == ClassifNudez.LIMPO }
-        val pend = vs.filter {
-            val c = res(it)?.classif
-            c == null || c == ClassifNudez.PENDENTE
-        }
+        // Partição EXCLUSIVA e única (ClassifUnica): cada vídeo em exatamente um balde.
+        val part = ClassifUnica.particionar(vs, orgMap)
+        val nude = part.getValue(ClassifUnica.Balde.PUTARIA)
+        val limpo = part.getValue(ClassifUnica.Balde.SEM_NUDEZ)
+        val pend = part.getValue(ClassifUnica.Balde.NAO_VERIFICADO)
         buildList {
             if (nude.isNotEmpty()) add(Pasta("__putaria", "Putaria", nude))
             if (limpo.isNotEmpty()) add(Pasta("__sem", "Sem nudez", limpo))
-            if (pend.isNotEmpty()) add(Pasta("__pend", "Não analisados", pend))
+            if (pend.isNotEmpty()) add(Pasta("__pend", "Ainda não verificado", pend))
         }
     }
-    val pastaSel = remember(pastaId, pastas, albumsVirtuais) {
+    val pastaSel = remember(pastaId, pastas, albumsVirtuais, favPasta) {
         pastaId?.let { id ->
             if (NavAbas.pastaIdRemovido(id)) null
-            else pastas.find { it.id == id } ?: albumsVirtuais.find { it.id == id }
+            else pastas.find { it.id == id } ?: albumsVirtuais.find { it.id == id } ?: favPasta?.takeIf { it.id == id }
         }
     }
     val ordemAtual = runCatching { Ordenacao.valueOf(ordem) }.getOrDefault(Ordenacao.MAIS_NOVOS)
@@ -281,7 +293,7 @@ fun Biblioteca(
                 onAbrir = { onAbrir(it) },
                 orgMap = orgMap, embMap = embMap, analiseProg = analiseProg, filtroCats = false,
                 cols = colsVideos, onCols = { colsVideos = it.coerceIn(3, 5) },
-                gridState = gridPessoa,
+                gridState = gridPessoa, explMap = explMap,
             )
             pessoasAberto -> PessoasTela(videos ?: emptyList(), onVoltar = { pessoasAberto = false }, onAbrir = { pessoaPasta = it })
             pastaSel != null -> PastaVideosTela(
@@ -289,9 +301,10 @@ fun Biblioteca(
                 ordem = ordemAtual, onOrdem = { o -> ordem = o.name; pastaId?.let { OrdemPrefs.set(ctx, it, o) } }, menuOrdem = menuOrdem, onMenuOrdem = { menuOrdem = it },
                 onVoltar = { guardarScrolls(); pastaId = null; busca = "" },
                 onAbrir = { guardarScrolls(); onAbrir(it) },
-                orgMap = orgMap, embMap = embMap, analiseProg = analiseProg, filtroCats = pastaSel!!.id.startsWith("__"),
+                orgMap = orgMap, embMap = embMap, analiseProg = analiseProg, filtroCats = pastaSel!!.id == "__putaria",   // chips de categoria só em Putaria (Sem nudez nunca tem categorias)
+
                 cols = colsVideos, onCols = { colsVideos = it.coerceIn(3, 5) },
-                gridState = scrollPasta,
+                gridState = scrollPasta, explMap = explMap,
             )
             abaAtual == AbaGaleria.VIDEOS -> AbaVideos(
                 videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
@@ -304,18 +317,19 @@ fun Biblioteca(
                 menuOrdem = menuOrdem, onMenuOrdem = { menuOrdem = it },
                 cols = colsVideos, onCols = { colsVideos = it.coerceIn(3, 5) },
                 gridState = scrollVideos, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
-                recentes = recentes,
+                recentes = recentes, explMap = explMap,
             )
             abaAtual == AbaGaleria.ALBUNS -> AbaAlbuns(
                 pastas = pastas, videos = videos, temPerm = temPerm, acessoParcial = acessoParcial,
                 onPermitir = { pedir.launch(perm) },
                 onPasta = { p ->
                     guardarScrolls(); pastaId = p.id; busca = ""
-                    ordem = OrdemPrefs.get(ctx, p.id, Ordenacao.MAIS_NOVOS).name
+                    ordem = OrdemPrefs.get(ctx, p.id, if (p.id == Favoritos.PASTA_ID) Ordenacao.FAVORITADOS else Ordenacao.MAIS_NOVOS).name
                     pastaScrollIx = 0; pastaScrollOff = 0
                     // Grid da pasta é compartilhado: pasta nova abre no topo (não na rolagem da anterior).
                     escopo.launch { runCatching { scrollPasta.scrollToItem(0) } }
                 },
+                favoritos = favVideos, onFavoritos = { favPasta },
                 cols = colsAlbuns, onCols = { colsAlbuns = it.coerceIn(2, 4) },
                 gridState = scrollAlbuns, onAbrirArquivo = { picker.launch(arrayOf("video/*")) },
                 recentes = recentes, onAbrir = { guardarScrolls(); onAbrir(it) },
@@ -418,9 +432,10 @@ private fun AbaVideos(
     ordem: Ordenacao, onOrdem: (Ordenacao) -> Unit, menuOrdem: Boolean, onMenuOrdem: (Boolean) -> Unit,
     cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState, onAbrirArquivo: () -> Unit,
     recentes: List<Video> = emptyList(),
+    explMap: Map<String, Float> = emptyMap(),
 ) {
     val brutos = videos ?: emptyList()
-    val lista = remember(brutos, ordem, embMap) {
+    val lista = remember(brutos, ordem, embMap, explMap) {
         when (ordem) {
             Ordenacao.MAIS_NOVOS -> brutos.sortedByDescending { it.dataMod }
             Ordenacao.MAIS_ANTIGOS -> brutos.sortedBy { it.dataMod }
@@ -432,6 +447,8 @@ private fun AbaVideos(
             Ordenacao.MENOR_RES -> brutos.sortedBy { it.pixels }
             Ordenacao.NOME -> brutos.sortedBy { it.nome.lowercase() }
             Ordenacao.SEMELHANCA -> Semelhanca.ordenarPorSemelhanca(brutos, embMap)
+            Ordenacao.MAIS_EXPLICITO -> Explicito.ordenar(brutos, explMap)
+            Ordenacao.FAVORITADOS -> brutos
         }
     }
     Column(Modifier.fillMaxSize().pointerInput(cols) {
@@ -447,7 +464,7 @@ private fun AbaVideos(
             Box {
                 IconButton(onClick = { onMenuOrdem(true) }) { Icon(Icons.AutoMirrored.Filled.Sort, "Ordenar", tint = Color.White) }
                 DropdownMenu(menuOrdem, { onMenuOrdem(false) }) {
-                    Ordenacao.entries.forEach { o ->
+                    Ordenacao.entries.filter { it != Ordenacao.FAVORITADOS }.forEach { o ->
                         DropdownMenuItem(
                             text = { Text(o.rotulo) },
                             onClick = { onOrdem(o); onMenuOrdem(false) },
@@ -489,6 +506,7 @@ private fun AbaAlbuns(
     pastas: List<Pasta>, videos: List<Video>?, temPerm: Boolean, acessoParcial: Boolean, onPermitir: () -> Unit,
     onPasta: (Pasta) -> Unit, cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState, onAbrirArquivo: () -> Unit,
     recentes: List<Video> = emptyList(), onAbrir: (Video) -> Unit = {}, onPessoas: () -> Unit = {},
+    favoritos: List<Video> = emptyList(), onFavoritos: () -> Pasta? = { null },
 ) {
     Column(Modifier.fillMaxSize().pointerInput(cols) {
         detectTransformGestures { _, _, zoom, _ ->
@@ -525,6 +543,9 @@ private fun AbaAlbuns(
             modifier = Modifier.fillMaxSize(),
         ) {
             if (recentes.isNotEmpty()) item(key = "__recentes", span = { GridItemSpan(maxLineSpan) }) { LinhaRecentes(recentes, onAbrir) }
+            if (favoritos.isNotEmpty()) item(key = "__favoritos", span = { GridItemSpan(maxLineSpan) }) {
+                CartaFavoritosEntrada(favoritos.size) { onFavoritos()?.let(onPasta) }
+            }
             item(key = "__pessoas", span = { GridItemSpan(maxLineSpan) }) { CartaPessoasEntrada(onPessoas) }
             items(pastas.size, key = { pastas[it].id }) { i ->
                 CartaAlbumSamsung(pastas[i]) { onPasta(pastas[i]) }
@@ -657,9 +678,10 @@ private fun PastaVideosTela(
     menuOrdem: Boolean, onMenuOrdem: (Boolean) -> Unit, onVoltar: () -> Unit, onAbrir: (Video) -> Unit,
     orgMap: Map<String, ResultadoOrg>, embMap: Map<String, FloatArray>, analiseProg: Map<String, Float>, filtroCats: Boolean,
     cols: Int, onCols: (Int) -> Unit, gridState: LazyGridState,
+    explMap: Map<String, Float> = emptyMap(),
 ) {
     var catFiltro by remember { mutableStateOf<Categoria?>(null) }
-    val filtrados = remember(pasta, busca, ordem, catFiltro, orgMap, embMap) {
+    val filtrados = remember(pasta, busca, ordem, catFiltro, orgMap, embMap, explMap) {
         var base = pasta.videos.filter { busca.isBlank() || it.nome.contains(busca, true) }
         if (catFiltro != null) base = base.filter { (orgMap[VideosMedia.chaveEstavel(it.uri.toString())] ?: orgMap[it.uri.toString()])?.cats?.contains(catFiltro) == true }
         when (ordem) {
@@ -673,6 +695,8 @@ private fun PastaVideosTela(
             Ordenacao.MENOR_RES -> base.sortedBy { it.pixels }
             Ordenacao.NOME -> base.sortedBy { it.nome.lowercase() }
             Ordenacao.SEMELHANCA -> Semelhanca.ordenarPorSemelhanca(base, embMap)
+            Ordenacao.MAIS_EXPLICITO -> Explicito.ordenar(base, explMap)
+            Ordenacao.FAVORITADOS -> base
         }
     }
     Column(
@@ -694,7 +718,7 @@ private fun PastaVideosTela(
             Box {
                 IconButton(onClick = { onMenuOrdem(true) }) { Icon(Icons.AutoMirrored.Filled.Sort, "Ordenar", tint = Color.White) }
                 DropdownMenu(menuOrdem, { onMenuOrdem(false) }) {
-                    Ordenacao.entries.forEach { o ->
+                    Ordenacao.entries.filter { it != Ordenacao.FAVORITADOS || pasta.id == Favoritos.PASTA_ID }.forEach { o ->
                         DropdownMenuItem(
                             text = { Text(o.rotulo) },
                             onClick = { onOrdem(o); onMenuOrdem(false) },
@@ -764,13 +788,15 @@ private fun TileVideoDenso(
     v: Video, sts: SharedTransitionScope, avs: AnimatedVisibilityScope, nude: Boolean, prog: Float? = null, onClick: () -> Unit,
 ) {
     val ctxTile = LocalContext.current
+    val fav = Favoritos.ehFavorito(v.uri)
+    var menuFav by remember { mutableStateOf(false) }
     val posVersao = PosicaoPrefs.versao.intValue
     val fracPos = remember(v.uri, v.duracao, posVersao) {
         PosicaoPrefs.fracao(ctxTile, VideosMedia.chaveEstavel(v.uri.toString()), v.duracao)
     }
     with(sts) {
         Box(
-            Modifier.fillMaxWidth().aspectRatio(1f).toque(onClick = onClick)
+            Modifier.fillMaxWidth().aspectRatio(1f).toqueLongo(onLongClick = { menuFav = true }, onClick = onClick)
                 .sharedBounds(rememberSharedContentState("v-${v.uri}"), avs, resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds)
                 .clip(RoundedCornerShape(4.dp)),
         ) {
@@ -797,6 +823,18 @@ private fun TileVideoDenso(
                 Box(
                     Modifier.align(Alignment.TopStart).padding(5.dp).size(7.dp)
                         .clip(CircleShape).background(Cores.Magenta),
+                )
+            }
+            if (fav) {
+                Icon(Icons.Default.Star, "Favorito", tint = Color(0xFFFFC107),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(18.dp)
+                        .background(Color(0x88000000), CircleShape).padding(2.dp))
+            }
+            DropdownMenu(menuFav, { menuFav = false }) {
+                DropdownMenuItem(
+                    text = { Text(if (fav) "Desfavoritar" else "Favoritar") },
+                    leadingIcon = { Icon(if (fav) Icons.Default.StarBorder else Icons.Default.Star, null) },
+                    onClick = { menuFav = false; Favoritos.alternar(ctxTile, v.uri) },
                 )
             }
             if (prog != null) {
@@ -829,6 +867,24 @@ private fun LinhaRecentes(vids: List<Video>, onAbrir: (Video) -> Unit, modifier:
                     )
                 }
             }
+        }
+    }
+}
+
+/** Cartão "Favoritos" no topo de Álbuns (escondido quando vazio). */
+@Composable
+private fun CartaFavoritosEntrada(n: Int, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().toque(onClick = onClick).clip(RoundedCornerShape(18.dp)).background(Color(0xFF1A1A1A)).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFFFFC107)), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Star, null, tint = Color(0xFF0B0A10))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Favoritos", color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+            Text(if (n == 1) "1 vídeo" else "$n vídeos", color = Color(0x99FFFFFF), style = MaterialTheme.typography.labelMedium)
         }
     }
 }

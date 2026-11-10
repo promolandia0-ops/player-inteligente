@@ -29,6 +29,8 @@ class App : Application() {
         // Processo UI: recupera chaves DB (pós v1.3.0) e retoma varredura se interrompida.
         runCatching { OrgRecuperacao.rodarSePreciso(this) }
         runCatching { OrganizarWorker.autoRetomarSePreciso(this) }
+        // v1.3.23: re-verificação rigorosa (1× após o upgrade) dos "Sem nudez" antigos — em segundo plano.
+        Thread({ runCatching { ClassifMigracao.rodarSePreciso(this) } }, "classif-migra").also { it.priority = Thread.MIN_PRIORITY }.start()
     }
 
     private fun nomeProcesso(): String {

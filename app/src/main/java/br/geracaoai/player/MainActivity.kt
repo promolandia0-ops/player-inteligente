@@ -378,6 +378,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var brilho by remember { mutableFloatStateOf(act.window.attributes.screenBrightness.takeIf { it >= 0 } ?: 0.5f) }
     var hud by remember { mutableStateOf<String?>(null) }
     var menuPlayer by remember { mutableStateOf(false) }
+    LaunchedEffect(video.uri) { if (Favoritos.estado.isEmpty()) withContext(Dispatchers.IO) { Favoritos.carregar(ctx) } }   // aberto por intent: carrega fora da UI
     var momentosAberto by remember { mutableStateOf(false) }
     var telaOff by remember { mutableStateOf(prefs.telaDesligada) }
     var zoomModo by remember { mutableStateOf(ModoZoom.de(prefs.zoomModo)) }
@@ -754,6 +755,14 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                                 }
                             }
                         }
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    // Favoritar (estrela): grava em segundo plano; o estado é o mesmo da galeria.
+                    val ehFav = Favoritos.ehFavorito(video.uri)
+                    Box(Modifier.size(36.dp).toque { val f = Favoritos.alternar(ctx, video.uri); hud = if (f) "Favoritado ★" else "Removido dos favoritos" }
+                        .vidro(RoundedCornerShape(12.dp), 0.5f), contentAlignment = Alignment.Center) {
+                        Icon(if (ehFav) Icons.Default.Star else Icons.Default.StarBorder, if (ehFav) "Desfavoritar" else "Favoritar",
+                            tint = if (ehFav) Color(0xFFFFC107) else Color.White, modifier = Modifier.size(20.dp))
                     }
                     Spacer(Modifier.width(4.dp))
                     Box {

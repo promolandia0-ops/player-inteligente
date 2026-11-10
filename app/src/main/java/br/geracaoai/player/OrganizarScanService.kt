@@ -252,12 +252,14 @@ class OrganizarScanService : Service() {
                     }
 
                     val res = classificarComTimeout(ctx, v, det)
+                    // Pausa/parada no meio do vídeo: leitura incompleta NÃO vale como resultado (só um acerto NUDE vale).
+                    if ((stopFlag.get() || pauseFlag.get() || OrganizarWorker.estaPausado(ctx)) && res.classif != ClassifNudez.NUDE) break
                     val classif = res.classif; val cats = res.cats
                     try {
-                        db.salvar(chave, classif, cats, v.dataMod, res.areaPeito, res.areaBunda, res.areaBuceta)
+                        db.gravarVarredura(chave, classif, cats, v.dataMod, ClassifUnica.VERSAO_ESTRITA, res.frames)
                     } catch (oom: OutOfMemoryError) {
                         Log.e(TAG, "OOM salvar", oom)
-                        runCatching { db.salvar(chave, ClassifNudez.ERRO, emptySet(), v.dataMod) }
+                        runCatching { db.gravarVarredura(chave, ClassifNudez.ERRO, emptySet(), v.dataMod, ClassifUnica.VERSAO_ESTRITA, 0) }
                         System.gc()
                     }
                     if (classif != ClassifNudez.ERRO && !stopFlag.get() && !Exclusao.playerEstaAberto(ctx)) {
@@ -321,6 +323,7 @@ class OrganizarScanService : Service() {
     private data class ClassifRes(
         val classif: ClassifNudez, val cats: Set<Categoria>,
         val areaPeito: Float = 0f, val areaBunda: Float = 0f, val areaBuceta: Float = 0f,
+        val frames: Int = 0,
     )
 
     private fun classificarComTimeout(
@@ -357,49 +360,36 @@ class OrganizarScanService : Service() {
             mmr.setDataSource(ctx, v.uri)
             if (cancel.get()) return ClassifRes(ClassifNudez.ERRO, emptySet())
             val dur = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: v.duracao
-            if (dur <= 0L) return ClassifRes(ClassifNudez.LIMPO, emptySet())
+            if (dur <= 0L) return ClassifRes(ClassifNudez.ERRO, emptySet())   // sem duração: não dá p/ provar nada
+            // v1.3.23 — varredura RIGOROSA: quadros espalhados pelo vídeo TODO (1 a cada ~12 s, 10–40), limiar BAIXO por classe
+            // (ânus × 0,6), QUALQUER acerto vira Putaria. LIMPO só se leu quadros suficientes e nada passou do limiar baixo.
             val hits = linkedSetOf<Categoria>()
-            var confirmados = 0
-            var maxPeito = 0f; var maxBunda = 0f; var maxBuceta = 0f
-            // Só classes *_EXPOSED contam (nunca COVERED/BELLY/FEET/ARMPITS/FACE); ≥2 quadros confirmam.
-            fun testar(t: Long): Boolean? {
+            val n = ClassifUnica.framesAlvo(dur)
+            var lidos = 0; var quadrosComAcerto = 0
+            for (i in 0 until n) {
+                if (cancel.get() || stopFlag.get() || pauseFlag.get()) break
+                val t = ClassifUnica.tempoDoQuadro(dur, i, n)
                 var bmp: Bitmap? = null
                 try {
-                    bmp = mmr.getScaledFrameAtTime(t * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, FRAME_MAX, FRAME_MAX) ?: return null
+                    bmp = mmr.getScaledFrameAtTime(t * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, FRAME_MAX, FRAME_MAX) ?: continue
                     if (bmp.width > FRAME_MAX || bmp.height > FRAME_MAX) {
                         val esc = FRAME_MAX.toFloat() / maxOf(bmp.width, bmp.height)
                         val s = Bitmap.createScaledBitmap(bmp, (bmp.width * esc).toInt().coerceAtLeast(1), (bmp.height * esc).toInt().coerceAtLeast(1), true)
                         if (s !== bmp) bmp.recycle()
                         bmp = s
                     }
-                    val (uiCats, putaria, areas) = det.pontuarExposto(bmp!!, LIMIAR)
-                    if (putaria) hits.addAll(uiCats)
-                    maxPeito = maxOf(maxPeito, areas[Categoria.PEITO] ?: 0f)
-                    maxBunda = maxOf(maxBunda, areas[Categoria.BUNDA] ?: 0f)
-                    maxBuceta = maxOf(maxBuceta, areas[Categoria.BUCETA] ?: 0f)
-                    return putaria
-                } finally { bmp?.let { if (!it.isRecycled) it.recycle() } }
+                    val acertos = ClassifUnica.acertos(det.pontuar(bmp!!))
+                    lidos++
+                    if (acertos.isNotEmpty()) { hits.addAll(acertos); quadrosComAcerto++ }
+                } catch (e: OutOfMemoryError) { System.gc(); throw e
+                } catch (e: Exception) { /* quadro ruim: não conta como lido */
+                } finally { runCatching { if (bmp != null && !bmp.isRecycled) bmp.recycle() } }
+                if (quadrosComAcerto >= ClassifUnica.QUADROS_PARA_PARAR) break
             }
-            val vistos = HashSet<Long>()
-            for (i in 0 until FRAMES) {
-                if (cancel.get() || stopFlag.get() || pauseFlag.get()) break
-                val t = (dur * (2 * i + 1)) / (2 * FRAMES) // evita 1º/último quadro (capa/créditos)
-                vistos.add(t)
-                if (testar(t) != true) continue
-                confirmados++
-                if (confirmados >= OrganizarWorker.CONFIRMACOES) break
-                // hit isolado: confere vizinhos (±1,5 s e ±3 s) antes de aceitar
-                for (d in longArrayOf(1500, -1500, 3000, -3000)) {
-                    if (cancel.get() || stopFlag.get()) break
-                    val tv = (t + d).coerceIn(0L, dur)
-                    if (!vistos.add(tv)) continue
-                    if (testar(tv) == true) { confirmados++; break }
-                }
-                if (confirmados >= OrganizarWorker.CONFIRMACOES) break
-            }
-            if (confirmados < OrganizarWorker.CONFIRMACOES) hits.clear()
-            if (hits.isEmpty()) ClassifRes(ClassifNudez.LIMPO, emptySet())
-            else ClassifRes(ClassifNudez.NUDE, hits, 0f, 0f, 0f)
+            if (hits.isNotEmpty()) ClassifRes(ClassifNudez.NUDE, hits, frames = lidos)
+            else if (cancel.get() || stopFlag.get() || pauseFlag.get()) ClassifRes(ClassifNudez.ERRO, emptySet())
+            else if (lidos >= ClassifUnica.framesMinimos(dur)) ClassifRes(ClassifNudez.LIMPO, emptySet(), frames = lidos)
+            else ClassifRes(ClassifNudez.ERRO, emptySet(), frames = lidos)    // leu pouco: NÃO prova ausência de nudez
         } catch (oom: OutOfMemoryError) {
             Log.w(TAG, "OOM video", oom); System.gc(); ClassifRes(ClassifNudez.ERRO, emptySet())
         } catch (e: Exception) {
