@@ -231,6 +231,52 @@ class ZoomControleTest {
         assertNull(TamanhoLogica.caixaAlvoModo(ModoZoom.PEITO_ROSTO, listOf(rosto)))
     }
 
+    @Test fun modoPeitoRostoAlternandoPartesMantemOsTresNoQuadroEEstavel() {
+        val rosto = p(TamanhoLogica.FACE_FEMALE, 0.50f, 0.40f, 0.05f, 0.06f)
+        val pe = p(TamanhoLogica.FEMALE_BREAST_EXPOSED, 0.46f, 0.50f, 0.05f, 0.04f)
+        val pd = p(TamanhoLogica.FEMALE_BREAST_EXPOSED, 0.54f, 0.50f, 0.05f, 0.04f)
+        val seq = listOf(listOf(pe), listOf(pd), listOf(rosto), listOf(pe, pd, rosto), listOf(pe, rosto), listOf(pd), listOf(rosto), listOf(pe), listOf(pe, pd, rosto))
+        val c = ZoomControle(); var ant: ZoomAlvo? = null; var maxDz = 0f; var maxDp = 0f
+        // aquece com todas as partes
+        repeat(3) { c.passo(listOf(pe, pd, rosto), ModoZoom.PEITO_ROSTO, vw, vh, cw, ch).alvo?.let { ant = it } }
+        for (ciclo in 0 until 4) for ((i, det) in seq.withIndex()) {
+            val a = c.passo(det, ModoZoom.PEITO_ROSTO, vw, vh, cw, ch).alvo ?: continue
+            for (parte in listOf(pe, pd, rosto)) {
+                val b = parte.caixa
+                for (nx in floatArrayOf(b.x0, b.x1)) for (ny in floatArrayOf(b.y0, b.y1)) {
+                    val (sx, sy) = TamanhoLogica.projetar(nx, ny, vw, vh, cw, ch, a.zoom, a.panX, a.panY)
+                    assertTrue("ciclo $ciclo/$i: x=$sx fora", sx in -2f..(cw + 2f)); assertTrue("ciclo $ciclo/$i: y=$sy fora", sy in -2f..(ch + 2f))
+                }
+            }
+            ant?.let { maxDz = maxOf(maxDz, kotlin.math.abs(a.zoom - it.zoom) / it.zoom); maxDp = maxOf(maxDp, kotlin.math.hypot((a.panX - it.panX).toDouble(), (a.panY - it.panY).toDouble()).toFloat() / (cw * a.zoom)) }
+            ant = a
+        }
+        assertTrue("zoom estável: variação máx $maxDz", maxDz < 0.05f)
+        assertTrue("pan estável: variação máx $maxDp", maxDp < 0.03f)
+    }
+
+    @Test fun modoPeitoRostoSoUmPeitoInfereOOutroEEstendeParaORosto() {
+        val pe = p(TamanhoLogica.FEMALE_BREAST_EXPOSED, 0.46f, 0.50f, 0.05f, 0.04f)
+        val rosto = p(TamanhoLogica.FACE_FEMALE, 0.50f, 0.40f, 0.05f, 0.06f)
+        val m = PeitoRostoMemoria()
+        val comRosto = m.passo(listOf(pe, rosto))!!                    // só o peito esquerdo, mas há rosto: espelha no eixo do rosto
+        assertTrue("inclui o peito direito inferido (x1=${comRosto.x1})", comRosto.x1 > 0.565f && comRosto.y0 < rosto.caixa.y0)
+        val sem = PeitoRostoMemoria().passo(listOf(pe))!!               // sem rosto: alarga e estende p/ cima
+        assertTrue("alarga p/ os dois lados", sem.x0 < pe.caixa.x0 && sem.x1 > pe.caixa.x1 + 0.03f)
+        assertTrue("estende p/ cima: y0=${sem.y0}", sem.y0 < pe.caixa.y0 - 0.02f)
+    }
+
+    @Test fun modoPeitoRostoMemoriaExpiraAposAlgunsCiclos() {
+        val pe = p(TamanhoLogica.FEMALE_BREAST_EXPOSED, 0.46f, 0.50f, 0.05f, 0.04f)
+        val pd = p(TamanhoLogica.FEMALE_BREAST_EXPOSED, 0.54f, 0.50f, 0.05f, 0.04f)
+        val rosto = p(TamanhoLogica.FACE_FEMALE, 0.50f, 0.40f, 0.05f, 0.06f)
+        val m = PeitoRostoMemoria(5)
+        m.passo(listOf(pe, pd, rosto))
+        repeat(3) { assertNotNull(m.passo(listOf(rosto))) }       // peitos lembrados
+        repeat(3) { m.passo(listOf(rosto)) }
+        assertNull("sem peito há > 2 s: sem alvo tight", m.passo(listOf(rosto)))
+    }
+
     @Test fun modosTightUsamAMesmaFiltragemSoMulher() {
         // peito (dela, à esquerda) + genitália "de outro vulto" sem contexto feminino perto: fica só o aglomerado dela
         val ela = listOf(p(TamanhoLogica.FACE_FEMALE, 0.2f, 0.40f, 0.04f, 0.045f), p(TamanhoLogica.FEMALE_BREAST_EXPOSED, 0.2f, 0.47f, 0.05f, 0.03f))
