@@ -470,6 +470,27 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
             act.sairTelaCheia()
         }
     }
+    // ---- Câmera lenta suave (v1.3.23): só em velocidade < 1×; a 1× o caminho normal (ExoPlayer → TextureView) fica intocado. ----
+    var lentaLigada by remember { mutableStateOf(prefs.lentaSuave) }
+    var lentaFalhou by remember(video.uri) { mutableStateOf(false) }
+    val lentaAtiva = CameraLentaLogica.ativa(lentaLigada && !lentaFalhou, velocidade)
+    val vsW = (vsize.width * (if (vsize.pixelWidthHeightRatio > 0) vsize.pixelWidthHeightRatio else 1f)).toInt(); val vsH = vsize.height
+    // Declarado DEPOIS do efeito do player: na saída é descartado ANTES do player.release() (devolve a view ao ExoPlayer).
+    DisposableEffect(lentaAtiva, textureView, vsW, vsH) {
+        val tv = textureView
+        var motor: CameraLentaGl? = null
+        if (lentaAtiva && tv != null && tv.isAvailable && vsW > 8 && vsH > 8) {
+            motor = CameraLentaGl(ctx, tv, player, vsW, vsH, { velocidade }) { msg ->
+                lentaFalhou = true
+                hud = "Câmera lenta suave indisponível aqui — reprodução normal"
+                android.util.Log.w("CameraLenta", msg)
+            }.also { it.iniciar() }
+        }
+        onDispose { motor?.parar() }
+    }
+    // Áudio: pitch corrigido (ExoPlayer) a partir de 0,5×; abaixo disso, silêncio limpo — só com o recurso ativo.
+    LaunchedEffect(lentaAtiva, velocidade) { player.volume = CameraLentaLogica.volume(velocidade, lentaAtiva) }
+    DisposableEffect(Unit) { onDispose { runCatching { player.volume = 1f } } }
     // Persiste a cada poucos segundos enquanto toca / em background compose.
     LaunchedEffect(video.uri) {
         while (true) {
@@ -798,6 +819,14 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                                 )
                             }
                             DropdownMenuItem(
+                                text = { Text(if (lentaLigada) "Câmera lenta suave: ligada" else "Câmera lenta suave: desligada") },
+                                onClick = {
+                                    lentaLigada = !lentaLigada; prefs.lentaSuave = lentaLigada; lentaFalhou = false
+                                    hud = if (lentaLigada) "Câmera lenta suave ligada (vale abaixo de 1×)" else "Câmera lenta suave desligada"
+                                    menuPlayer = false
+                                },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Melhores momentos") },
                                 onClick = { menuPlayer = false; momentosAberto = true },
                             )
@@ -880,7 +909,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                     B(Icons.Default.SkipNext, "Próxima", segs.isNotEmpty()) { proxima() }
                     Text("${fmt(pos)} / ${fmt(dur)}", Modifier.weight(1f).padding(start = 4.dp), color = Color.White, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                     Text("${velocidade}x", Modifier.toque {
-                        val l = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f); velocidade = l[(l.indexOf(velocidade) + 1) % l.size]; player.setPlaybackSpeed(velocidade)
+                        val l = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f); velocidade = l[(l.indexOf(velocidade) + 1) % l.size]; player.setPlaybackSpeed(velocidade)
                     }.padding(6.dp), color = Color.White, style = MaterialTheme.typography.labelMedium)
                     Text(modo.rotulo, Modifier.toque { modo = Modo.entries[(modo.ordinal + 1) % Modo.entries.size]; hud = modo.rotulo }.padding(6.dp),
                         color = Color.White, style = MaterialTheme.typography.labelMedium)

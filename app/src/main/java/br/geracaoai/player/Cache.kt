@@ -73,6 +73,8 @@ class Prefs(ctx: Context) {
     var zoomModo: Int
         get() = if (p.contains("zoom_modo")) p.getInt("zoom_modo", 0) else if (p.getBoolean("zoom_auto", false)) ModoZoom.CORPO.ordinal else 0
         set(v) = p.edit().putInt("zoom_modo", v).putBoolean("zoom_auto", v != 0).apply()
+    /** Câmera lenta suave (interpolação de quadros na GPU) abaixo de 1×. Ligada por padrão; cai sozinha p/ o normal se a GPU não der conta. */
+    var lentaSuave: Boolean get() = p.getBoolean("lenta_suave", true); set(v) = p.edit().putBoolean("lenta_suave", v).apply()
     var cats: Set<Categoria>
         get() = p.getStringSet("cats", Categoria.entries.map { it.name }.toSet())!!.mapNotNull { runCatching { Categoria.valueOf(it) }.getOrNull() }.toSet()
         set(v) = p.edit().putStringSet("cats", v.map { it.name }.toSet()).apply()
