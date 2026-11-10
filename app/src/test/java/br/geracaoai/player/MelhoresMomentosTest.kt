@@ -112,6 +112,6 @@ class MelhoresMomentosTest {
 
     @Test fun naoAfetaCategoriasForaDosPesos() {
         // Todas as categorias existentes têm peso definido (nada fica de fora por engano).
-        assertEquals(Categoria.entries.toSet(), MelhoresMomentos.PESOS.keys)
+        assertEquals(Categoria.entries.filter { it.classIndex >= 0 }.toSet(), MelhoresMomentos.PESOS.keys)   // derivada (Bunda aberta) fica de fora dos pesos de propósito
     }
 }

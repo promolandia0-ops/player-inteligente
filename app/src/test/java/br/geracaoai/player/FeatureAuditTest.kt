@@ -42,7 +42,7 @@ class FeatureAuditTest {
     }
 
     @Test fun categoriasSemGemidoMasComAsDemais() {
-        assertEquals(listOf("PEITO", "BUNDA", "BUCETA", "ANUS"), Categoria.entries.map { it.name })
+        assertEquals(listOf("PEITO", "BUNDA", "BUCETA", "ANUS", "BUNDA_ABERTA"), Categoria.entries.map { it.name })
     }
 
     @Test fun modoAjustarDefaultLabel() {

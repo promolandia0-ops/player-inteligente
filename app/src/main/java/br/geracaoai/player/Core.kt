@@ -5,7 +5,37 @@ enum class Categoria(val rotulo: String, val classIndex: Int, val cor: Long) {
     PEITO("Peito", 3, 0xFFFF5C8A),      // FEMALE_BREAST_EXPOSED
     BUNDA("Bunda", 2, 0xFFFFB300),      // BUTTOCKS_EXPOSED
     BUCETA("Buceta", 4, 0xFFB388FF),    // FEMALE_GENITALIA_EXPOSED
-    ANUS("Cuzinho", 6, 0xFF00E5A8);     // ANUS_EXPOSED
+    ANUS("Cuzinho", 6, 0xFF00E5A8),     // ANUS_EXPOSED
+    /** Derivada (v1.3.20): buceta E cu expostos juntos no mesmo quadro/janela curta. classIndex -1 = o Detector nunca a pontua; calculada ao carregar a análise. */
+    BUNDA_ABERTA("Bunda aberta", -1, 0xFFFF6E40);
+}
+
+/** Categorias derivadas dos scores já salvos (sem mudar o Detector nem o formato da análise). */
+object Derivadas {
+    /** Janela (ms) em que buceta e cu contam como "juntos". */
+    const val JANELA_MS = 1500L
+
+    /**
+     * Pontuação de "Bunda aberta" por quadro = o MENOR entre buceta e cu quando os dois aparecem no mesmo quadro ou a ≤ [janelaMs]
+     * um do outro (mesmo quadro: min(buceta, cu); senão min(buceta, melhor cu da janela) e vice-versa). Só quadros que têm buceta ou
+     * cu recebem valor — a cena não se alarga além dos quadros detectados. [tempos] pode estar fora de ordem.
+     */
+    fun bundaAberta(tempos: LongArray, buceta: FloatArray, anus: FloatArray, janelaMs: Long = JANELA_MS): FloatArray {
+        val n = tempos.size
+        val out = FloatArray(n)
+        if (n == 0 || buceta.size != n || anus.size != n) return out
+        val ord = (0 until n).sortedBy { tempos[it] }
+        for (k in 0 until n) {
+            val i = ord[k]
+            var maxB = buceta[i]; var maxA = anus[i]
+            var j = k - 1
+            while (j >= 0 && tempos[i] - tempos[ord[j]] <= janelaMs) { maxB = maxOf(maxB, buceta[ord[j]]); maxA = maxOf(maxA, anus[ord[j]]); j-- }
+            j = k + 1
+            while (j < n && tempos[ord[j]] - tempos[i] <= janelaMs) { maxB = maxOf(maxB, buceta[ord[j]]); maxA = maxOf(maxA, anus[ord[j]]); j++ }
+            out[i] = maxOf(minOf(buceta[i], maxA), minOf(anus[i], maxB))
+        }
+        return out
+    }
 }
 
 data class Segmento(val categoria: Categoria, val inicioMs: Long, val fimMs: Long, val pico: Float)

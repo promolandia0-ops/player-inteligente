@@ -718,8 +718,8 @@ private fun PastaVideosTela(
                             .padding(horizontal = 12.dp, vertical = 7.dp),
                     ) { Text("Todas", style = MaterialTheme.typography.labelMedium, color = Color.White) }
                 }
-                items(Categoria.entries.size) { i ->
-                    val c = Categoria.entries[i]
+                items(Categoria.entries.filter { it.classIndex >= 0 }.size) { i ->   // derivadas (Bunda aberta) só no player
+                    val c = Categoria.entries.filter { it.classIndex >= 0 }[i]
                     ChipCategoria(c, c == catFiltro) { catFiltro = if (catFiltro == c) null else c }
                 }
             }

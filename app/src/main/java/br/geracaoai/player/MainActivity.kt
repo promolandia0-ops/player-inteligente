@@ -358,7 +358,7 @@ fun Ajustes(voltar: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalSharedTransitionApi::class)
+@OptIn(ExperimentalSharedTransitionApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs: AnimatedVisibilityScope?, voltar: () -> Unit) {
     val ctx = LocalContext.current
@@ -724,7 +724,10 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                 style = MaterialTheme.typography.labelSmall, color = Color(0xCCFFFFFF), maxLines = 1)
         }
         // —— TOPO: voltar + pills + números + ícone buscar ——
-        AnimatedVisibility(controles, Modifier.align(Alignment.TopCenter).statusBarsPadding(),
+        AnimatedVisibility(controles, Modifier.align(Alignment.TopCenter)
+            // Abaixo da barra de status/recorte (câmera) MESMO em tela cheia imersiva (onde statusBarsPadding() vira 0 e a barra, ao aparecer, cobria os botões).
+            .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility.union(WindowInsets.displayCutout).only(WindowInsetsSides.Top))
+            .padding(top = 4.dp),
             enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 }) {
             val cenaAtual = segs.indexOfFirst { pos in Segmentador.alvoDoSalto(it, offsetMs)..it.fimMs }.takeIf { it >= 0 }
             Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
