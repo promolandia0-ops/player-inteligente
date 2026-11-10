@@ -19,8 +19,9 @@ class ZoomRastreador(
 ) {
     companion object {
         /** Mais baixo que o da análise: aqui basta achar rosto/2 partes; falso positivo só gera zoom leve. */
-        const val LIMIAR = 0.35f
-        private const val LOTE = 4
+        const val LIMIAR = 0.33f
+        /** Quadrados pequenos varridos em ~3 ciclos (portrait 9:16 tem 15 → 5 por ciclo). */
+        private const val CICLOS_VARREDURA = 3
     }
 
     enum class Modo { SEGUINDO, QUADRO, QUADRADOS_GRANDES, QUADRADOS_PEQUENOS, NADA }
@@ -45,37 +46,58 @@ class ZoomRastreador(
         } finally { if (rec !== frame && !rec.isRecycled) rec.recycle() }
     }
 
-    /** Roda cada região e devolve a melhor detecção VÁLIDA (soma dos scores) — não mistura recortes diferentes. */
+    /** Só o melhor aglomerado feminino (uma pessoa) de uma região, ou null se não for utilizável. */
+    private fun aceitar(p: List<TamanhoLogica.CaixaParte>): List<TamanhoLogica.CaixaParte>? =
+        TamanhoLogica.aglomeradoFeminino(p).takeIf { TamanhoLogica.valido(it) }
+
+    private fun score(p: List<TamanhoLogica.CaixaParte>) =
+        p.sumOf { (it.caixa.sc + if (TamanhoLogica.ehAncora(it.classe)) 0.5f else 0f).toDouble() }.toFloat()
+
+    /** Roda cada região e devolve o melhor aglomerado VÁLIDO — não mistura recortes diferentes. */
     private fun varrer(frame: Bitmap, regs: List<TamanhoLogica.RectN>): Pair<List<TamanhoLogica.CaixaParte>, Int> {
         var melhor: List<TamanhoLogica.CaixaParte> = emptyList(); var bs = 0f; var n = 0
         for (rg in regs) {
             val (p, k) = regiao(frame, rg); n += k
-            if (!TamanhoLogica.valido(p)) continue
-            val s = p.sumOf { it.caixa.sc.toDouble() }.toFloat()
-            if (s > bs) { bs = s; melhor = p }
+            val c = aceitar(p) ?: continue
+            val s = score(c)
+            if (s > bs) { bs = s; melhor = c }
         }
         return melhor to n
+    }
+
+    private fun achou(c: List<TamanhoLogica.CaixaParte>, modo: Modo, inf: Int): Resultado {
+        ultimaCaixa = TamanhoLogica.caixaCorpoPadded(c)
+        return Resultado(c, modo, inf)
     }
 
     /** Um ciclo de amostragem. [frame] = quadro inteiro do vídeo (não recicla). */
     fun passo(frame: Bitmap): Resultado {
         var inf = 0
         ultimaCaixa?.let { cx ->
+            // 1) acompanha: 1 recorte em volta da última posição
             val (p, k) = regiao(frame, TamanhoLogica.recorteQuadradoEm(cx, frame.width, frame.height))
             inf += k
-            if (TamanhoLogica.valido(p)) { ultimaCaixa = TamanhoLogica.caixaCorpoPadded(p); return Resultado(p, Modo.SEGUINDO, inf) }
-            ultimaCaixa = null   // perdeu: procura de novo já neste ciclo
+            aceitar(p)?.let { return achou(it, Modo.SEGUINDO, inf) }
+            // 2) perdeu: recorte bem maior em volta (ela andou/saiu do recorte) antes de varrer tudo
+            val (p2, k2) = regiao(frame, TamanhoLogica.recorteQuadradoEm(cx, frame.width, frame.height, folga = 2.6f, minFrac = 0.55f))
+            inf += k2
+            aceitar(p2)?.let { return achou(it, Modo.SEGUINDO, inf) }
+            ultimaCaixa = null
         }
         val (q, k1) = regiao(frame, TamanhoLogica.RectN(0f, 0f, 1f, 1f)); inf += k1
-        if (TamanhoLogica.valido(q)) { ultimaCaixa = TamanhoLogica.caixaCorpoPadded(q); return Resultado(q, Modo.QUADRO, inf) }
+        aceitar(q)?.let { return achou(it, Modo.QUADRO, inf) }
         val (g, k2) = varrer(frame, TamanhoLogica.quadrados(frame.width, frame.height, 1f)); inf += k2
-        if (TamanhoLogica.valido(g)) { ultimaCaixa = TamanhoLogica.caixaCorpoPadded(g); return Resultado(g, Modo.QUADRADOS_GRANDES, inf) }
+        if (g.isNotEmpty()) return achou(g, Modo.QUADRADOS_GRANDES, inf)
+        // Quadrados de meia largura (retrato 9:16: 15 recortes). Ordem: do centro para fora (pessoas ficam no meio);
+        // lotes rotativos que cobrem tudo em ~3 ciclos.
         val pequenos = TamanhoLogica.quadrados(frame.width, frame.height, 0.5f)
+            .sortedBy { kotlin.math.abs(it.cy - 0.5f) + 0.3f * kotlin.math.abs(it.cx - 0.5f) }
         if (pequenos.isEmpty()) return Resultado(emptyList(), Modo.NADA, inf)
-        val lote = List(minOf(LOTE, pequenos.size)) { pequenos[(proxPequeno + it) % pequenos.size] }
-        proxPequeno = (proxPequeno + lote.size) % pequenos.size
-        val (s, k3) = varrer(frame, lote); inf += k3
-        if (TamanhoLogica.valido(s)) { ultimaCaixa = TamanhoLogica.caixaCorpoPadded(s); return Resultado(s, Modo.QUADRADOS_PEQUENOS, inf) }
+        val lote = kotlin.math.ceil(pequenos.size / CICLOS_VARREDURA.toDouble()).toInt().coerceAtLeast(1)
+        val regs = List(minOf(lote, pequenos.size)) { pequenos[(proxPequeno + it) % pequenos.size] }
+        proxPequeno = (proxPequeno + regs.size) % pequenos.size
+        val (s, k3) = varrer(frame, regs); inf += k3
+        if (s.isNotEmpty()) return achou(s, Modo.QUADRADOS_PEQUENOS, inf)
         return Resultado(emptyList(), Modo.NADA, inf)
     }
 }

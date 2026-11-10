@@ -115,4 +115,59 @@ class ZoomPipelineTest {
             repeat(8) { assertTrue(r.passo(frame("longe_100.jpg")).partes.isEmpty()) }
         }
     }
+
+    // ── Retrato 9:16 (celular em pé, câmera parada, mulher pequena no meio-esquerda) ──
+
+    private fun comRuido(src: Bitmap, rnd: java.util.Random): Bitmap {
+        val b = src.copy(Bitmap.Config.ARGB_8888, true)
+        val px = IntArray(b.width * b.height); b.getPixels(px, 0, b.width, 0, 0, b.width, b.height)
+        for (i in px.indices) {
+            val c = px[i]; val d = (rnd.nextGaussian() * 3.0).toInt()
+            fun k(v: Int) = (v + d).coerceIn(0, 255)
+            px[i] = Color.rgb(k(Color.red(c)), k(Color.green(c)), k(Color.blue(c)))
+        }
+        b.setPixels(px, 0, b.width, 0, 0, b.width, b.height); return b
+    }
+
+    private fun retrato30Quadros(nome: String, modo: ModoZoom = ModoZoom.CORPO): String {
+        // Vídeo 720×1280 em Ajustar num celular em pé 1080×2340 → view 1080×1920.
+        val vwR = 1080f; val vhR = 1920f; val cwR = 1080f; val chR = 2340f
+        val base = frame(nome); val rnd = java.util.Random(42)
+        val log = StringBuilder()
+        comDetector { r ->
+            val c = ZoomControle(); var aplicado: TamanhoLogica.ZoomAlvo? = null
+            var primeiroLock = -1; var primeiroZoom = -1; val zooms = ArrayList<Float>(); var ocupa = 0; var ligadoDepois = true
+            var ultimaPartes: List<TamanhoLogica.CaixaParte> = emptyList()
+            for (i in 0 until 30) {
+                val res = r.passo(comRuido(base, rnd))
+                if (res.partes.isNotEmpty()) { if (primeiroLock < 0) primeiroLock = i + 1; ultimaPartes = res.partes }
+                val s = c.passo(res.partes, modo, vwR, vhR, cwR, chR)
+                if (s.estado == ZoomControle.Estado.OCUPA_QUADRO) ocupa++
+                s.alvo?.let { a -> zooms += a.zoom; if (a.zoom > 1.05f && primeiroZoom < 0) primeiroZoom = i + 1; if (TamanhoLogica.deveAtualizarAlvo(aplicado, a)) aplicado = a }
+                if (primeiroZoom in 1..i && !c.zoomEstaLigado) ligadoDepois = false
+                log.append("  ciclo ${i + 1}: modo=${res.modo} inf=${res.inferencias} partes=${res.partes.joinToString { "${it.classe}:${"%.2f".format(it.caixa.sc)}" }} estado=${s.estado} zoom=${s.alvo?.zoom}\n")
+            }
+            val a = aplicado
+            val box = TamanhoLogica.caixaCorpoPadded(ultimaPartes)
+            log.append("RESUMO $nome lock=$primeiroLock zoom1=$primeiroZoom zooms=${zooms.minOrNull()}..${zooms.maxOrNull()} ocupa=$ocupa aplicado=$a box=$box ligadoSempre=$ligadoDepois\n")
+            assertTrue("$nome: lock em 1–3 ciclos (foi $primeiroLock)\n$log", primeiroLock in 1..3)
+            assertTrue("$nome: zoom ligado em até 4 ciclos (foi $primeiroZoom)\n$log", primeiroZoom in 1..4)
+            assertEquals("$nome: nunca 'ocupa o quadro'", 0, ocupa)
+            assertTrue("$nome: zoom nunca desliga\n$log", ligadoDepois)
+            assertTrue("$nome: zoom>1,8 (min=${zooms.minOrNull()})\n$log", zooms.minOrNull()!! > 1.8f)
+            assertTrue("$nome: zoom constante ${zooms.minOrNull()}..${zooms.maxOrNull()}", zooms.maxOrNull()!! / zooms.minOrNull()!! < 1.12f)
+            for (nx in floatArrayOf(box!!.x0, box.x1)) for (ny in floatArrayOf(box.y0, box.y1)) {
+                val (sx, sy) = TamanhoLogica.projetar(nx, ny, vwR, vhR, cwR, chR, a!!.zoom, a.panX, a.panY)
+                assertTrue("$nome: x=$sx fora", sx in -2f..(cwR + 2f)); assertTrue("$nome: y=$sy fora", sy in -2f..(chR + 2f))
+            }
+        }
+        return log.toString()
+    }
+
+    @Test fun retrato9x16MulherA15PorCentoDaAlturaTrava() { println(retrato30Quadros("sala_192.jpg")) }
+    @Test fun retrato9x16MulherA20PorCentoDaAlturaTrava() { println(retrato30Quadros("sala_256.jpg")) }
+    @Test fun retrato9x16MulherA25PorCentoDaAlturaTrava() { println(retrato30Quadros("sala_320.jpg")) }
+    @Test fun retrato9x16MulherPequenaForaDoCentroTambemTravaEm3Ciclos() {
+        println(retrato30Quadros("sala_192_baixo.jpg")); println(retrato30Quadros("sala_192_alto.jpg"))
+    }
 }

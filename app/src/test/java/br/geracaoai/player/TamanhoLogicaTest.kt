@@ -255,6 +255,14 @@ class ZoomRecortesTest {
         assertFalse(TamanhoLogica.valido(emptyList()))
         assertFalse(TamanhoLogica.valido(listOf(p(TamanhoLogica.FEET_EXPOSED))))
         assertTrue(TamanhoLogica.valido(listOf(p(TamanhoLogica.FACE_FEMALE))))
-        assertTrue(TamanhoLogica.valido(listOf(p(TamanhoLogica.BELLY_EXPOSED), p(TamanhoLogica.FEET_COVERED))))
+        // barriga+pés são neutros (podem ser de um homem): não bastam
+        assertFalse(TamanhoLogica.valido(listOf(p(TamanhoLogica.BELLY_EXPOSED), p(TamanhoLogica.FEET_COVERED))))
+        assertTrue(TamanhoLogica.valido(listOf(p(TamanhoLogica.BUTTOCKS_COVERED), p(TamanhoLogica.FEET_COVERED))))
+        // âncora sozinha precisa de score mínimo
+        fun fraco(c: Int) = TamanhoLogica.CaixaParte(c, TamanhoLogica.Caixa(0.26f, 0.5f, 0.5f, 0.1f, 0.1f))
+        assertFalse(TamanhoLogica.valido(listOf(fraco(TamanhoLogica.FEMALE_BREAST_EXPOSED))))
+        assertTrue(TamanhoLogica.valido(listOf(p(TamanhoLogica.FEMALE_BREAST_EXPOSED))))
+        assertTrue(TamanhoLogica.valido(listOf(p(TamanhoLogica.BUTTOCKS_EXPOSED))))
+        assertTrue(TamanhoLogica.valido(listOf(p(TamanhoLogica.FEMALE_GENITALIA_EXPOSED))))
     }
 }

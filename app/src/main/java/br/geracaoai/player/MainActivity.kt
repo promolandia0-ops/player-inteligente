@@ -376,7 +376,9 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     var menuPlayer by remember { mutableStateOf(false) }
     var momentosAberto by remember { mutableStateOf(false) }
     var telaOff by remember { mutableStateOf(prefs.telaDesligada) }
-    var zoomAuto by remember { mutableStateOf(prefs.zoomAuto) }
+    var zoomModo by remember { mutableStateOf(ModoZoom.de(prefs.zoomModo)) }
+    val zoomAuto = zoomModo != ModoZoom.DESLIGADO
+    var zoomOpcoes by remember { mutableStateOf(false) }
     var zoomManual by remember(video.uri) { mutableStateOf(false) }
     var zoomStatus by remember { mutableStateOf<String?>(null) }
     var textureView by remember { mutableStateOf<TextureView?>(null) }
@@ -473,28 +475,26 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
             }
         }
     }
-    LaunchedEffect(zoomAuto, zoomManual, video.uri) {
-        if (!zoomAuto || zoomManual) { zoomStatus = null; return@LaunchedEffect }
+    LaunchedEffect(zoomModo, zoomManual, video.uri) {
+        if (zoomModo == ModoZoom.DESLIGADO || zoomManual) { zoomStatus = null; return@LaunchedEffect }
         var det: Detector? = null
         val rastreador = ZoomRastreador { bmp, lim ->
             val d = det ?: Detector(ctx, false).also { det = it }
             d.caixasCorpo(bmp, lim)
         }
-        val historico = ArrayDeque<List<TamanhoLogica.CaixaParte>>(3)
+        val controle = ZoomControle()
         var ultimo: TamanhoLogica.ZoomAlvo? = null
-        var semCorpo = 0
         var posParado = -1L
         var ultimoMotivo = ""
         fun motivo(m: String) { if (m != ultimoMotivo) { ultimoMotivo = m; android.util.Log.d("ZoomAuto", m) } }
-        android.util.Log.d("ZoomAuto", "loop iniciado")
+        android.util.Log.d("ZoomAuto", "loop iniciado modo=${zoomModo.rotulo}")
         zoomStatus = "Zoom: procurando…"
         try {
             while (true) {
                 delay(400)
-                if (!zoomAuto || zoomManual) break
+                if (zoomModo == ModoZoom.DESLIGADO || zoomManual) break
                 // Pausado e sem mudar de posição: nada novo para enquadrar (poupa CPU/bateria).
                 if (!player.isPlaying) { val pp = player.currentPosition; if (pp == posParado) { motivo("pausado/sem mudança"); continue }; posParado = pp } else posParado = -1L
-                // Consulta ao WorkManager fora da thread principal (antes bloqueava a UI a cada ciclo).
                 // Com a análise rodando em segundo plano o zoom continua, só que mais devagar (não disputa CPU em excesso).
                 if (withContext(Dispatchers.IO) { AnaliseWorker.rodando(ctx) }) { motivo("análise rodando (ciclo mais lento)"); delay(500) }
                 val tv = textureView
@@ -503,7 +503,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                 val cw = viewCw; val ch = viewCh
                 val vw = vidW; val vh = vidH
                 if (vw < 8f || vh < 8f || cw < 8f || ch < 8f) { motivo("tamanho 0 vw=$vw vh=$vh cw=$cw ch=$ch"); continue }
-                // Quadro inteiro na proporção do vídeo (até 1024 px): o rastreador recorta/escala por conta própria.
+                // A TextureView já tem exatamente o tamanho/proporção do vídeo (sem tarjas): o quadro vem limpo.
                 val esc = 1024f / maxOf(vw, vh)
                 val bw = (vw * esc).toInt().coerceAtLeast(16); val bh = (vh * esc).toInt().coerceAtLeast(16)
                 val bmp = runCatching { tv.getBitmap(bw, bh) }.getOrNull()
@@ -519,30 +519,14 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                         if (!bmp.isRecycled) bmp.recycle()
                     }
                 }
-                val partes = res.partes
-                motivo("${res.modo} inf=${res.inferencias} partes=" + partes.joinToString { "${it.classe}@${"%.2f".format(it.caixa.sc)}" })
-                if (partes.isNotEmpty()) {
-                    // Se ela "pulou" de lugar (andou muito / voltou à cena), descarta o passado: o zoom vai direto.
-                    val bn = TamanhoLogica.caixaCorpoPadded(partes); val bo = historico.lastOrNull()?.let { TamanhoLogica.caixaCorpoPadded(it) }
-                    if (bn != null && bo != null && kotlin.math.abs((bn.x0 + bn.x1) / 2f - (bo.x0 + bo.x1) / 2f) > 0.2f) historico.clear()
-                    historico.addLast(partes)
-                    // Só as 2 últimas detecções (~0,8 s): a união segue a mulher quando ela anda.
-                    while (historico.size > 2) historico.removeFirst()
-                    semCorpo = 0
-                } else {
-                    semCorpo++
-                    zoomStatus = "Zoom: procurando…"
-                    if (semCorpo >= 8) {
-                        // Nada por ~3 s → volta suavemente a 1x
-                        if (zoom > 1.05f) { zoom = 1f; pan = Offset.Zero; ultimo = TamanhoLogica.ZoomAlvo(1f, 0f, 0f) }
-                        historico.clear()
-                    }
-                    continue
+                motivo("${res.modo} inf=${res.inferencias} partes=" + res.partes.joinToString { "${it.classe}@${"%.2f".format(it.caixa.sc)}" })
+                val s = controle.passo(res.partes, zoomModo, vw, vh, cw, ch)
+                zoomStatus = when (s.estado) {
+                    ZoomControle.Estado.PROCURANDO -> "Zoom: procurando…"
+                    ZoomControle.Estado.SEGUINDO -> "Zoom: seguindo"
+                    ZoomControle.Estado.OCUPA_QUADRO -> "Zoom: ela já ocupa o quadro"
                 }
-                val uniao = TamanhoLogica.uniaoTemporal(historico.toList())
-                val alvo = TamanhoLogica.enquadrarCorpoInteiro(uniao, vw, vh, contW = cw, contH = ch)
-                if (alvo == null) { motivo("sem alvo (poucas partes)"); continue }
-                zoomStatus = if (alvo.zoom > 1.01f) "Zoom: seguindo" else "Zoom: ela já ocupa o quadro"
+                val alvo = s.alvo ?: continue
                 if (!TamanhoLogica.deveAtualizarAlvo(ultimo, alvo)) continue
                 android.util.Log.d("ZoomAuto", "alvo zoom=${alvo.zoom} pan=${alvo.panX},${alvo.panY}")
                 ultimo = alvo
@@ -554,6 +538,7 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
             runCatching { det?.close() }
         }
     }
+
     // Reaplica imersivo se o sistema devolver as barras
     LaunchedEffect(video.uri) {
         while (true) {
@@ -779,17 +764,23 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                                 },
                             )
                             DropdownMenuItem(
-                                text = { Text(if (zoomAuto) "Zoom automático: ligado" else "Zoom automático") },
-                                onClick = {
-                                    zoomAuto = !zoomAuto
-                                    prefs.zoomAuto = zoomAuto
-                                    android.util.Log.d("ZoomAuto", "toggle -> $zoomAuto")
-                                    zoomManual = false
-                                    if (!zoomAuto) resetZoom()
-                                    hud = if (zoomAuto) "Zoom automático ligado" else "Zoom automático desligado"
-                                    menuPlayer = false
-                                },
+                                text = { Text(if (zoomAuto) "Zoom automático: ${zoomModo.rotulo}" else "Zoom automático") },
+                                onClick = { zoomOpcoes = !zoomOpcoes },
                             )
+                            if (zoomOpcoes) ModoZoom.entries.forEach { m ->
+                                DropdownMenuItem(
+                                    text = { Text((if (m == zoomModo) "✓  " else "     ") + m.rotulo) },
+                                    onClick = {
+                                        zoomModo = m
+                                        prefs.zoomModo = m.ordinal
+                                        zoomManual = false
+                                        if (m == ModoZoom.DESLIGADO) resetZoom()
+                                        hud = if (m == ModoZoom.DESLIGADO) "Zoom automático desligado" else "Zoom: ${m.rotulo}"
+                                        zoomOpcoes = false
+                                        menuPlayer = false
+                                    },
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("Melhores momentos") },
                                 onClick = { menuPlayer = false; momentosAberto = true },

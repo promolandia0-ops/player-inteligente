@@ -67,6 +67,10 @@ class Prefs(ctx: Context) {
     var telaDesligada: Boolean get() = p.getBoolean("tela_off", false); set(v) = p.edit().putBoolean("tela_off", v).apply()
     /** Zoom automático no player (off por padrão). */
     var zoomAuto: Boolean get() = p.getBoolean("zoom_auto", false); set(v) = p.edit().putBoolean("zoom_auto", v).apply()
+    /** Modo do Zoom automático (índice de [ModoZoom]). Migra o antigo liga/desliga: ligado → Corpo inteiro. */
+    var zoomModo: Int
+        get() = if (p.contains("zoom_modo")) p.getInt("zoom_modo", 0) else if (p.getBoolean("zoom_auto", false)) ModoZoom.CORPO.ordinal else 0
+        set(v) = p.edit().putInt("zoom_modo", v).putBoolean("zoom_auto", v != 0).apply()
     var cats: Set<Categoria>
         get() = p.getStringSet("cats", Categoria.entries.map { it.name }.toSet())!!.mapNotNull { runCatching { Categoria.valueOf(it) }.getOrNull() }.toSet()
         set(v) = p.edit().putStringSet("cats", v.map { it.name }.toSet()).apply()
