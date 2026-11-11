@@ -473,15 +473,25 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
     // ---- Câmera lenta suave (v1.3.23): só em velocidade < 1×; a 1× o caminho normal (ExoPlayer → TextureView) fica intocado. ----
     var lentaLigada by remember { mutableStateOf(prefs.lentaSuave) }
     var lentaFalhou by remember(video.uri) { mutableStateOf(false) }
+    var melhorarLigado by remember { mutableStateOf(prefs.melhorarImagem) }
     val lentaAtiva = CameraLentaLogica.ativa(lentaLigada && !lentaFalhou, velocidade)
+    // O motor de GPU roda se a interpolação (< 1×) OU o "Melhorar imagem" estiver valendo; a ≥ 1× sem melhoria o caminho normal fica intocado.
+    val motorAtivo = CameraLentaLogica.motorAtivo(lentaLigada && !lentaFalhou, melhorarLigado && !lentaFalhou, velocidade)
     val vsW = (vsize.width * (if (vsize.pixelWidthHeightRatio > 0) vsize.pixelWidthHeightRatio else 1f)).toInt(); val vsH = vsize.height
     // Declarado DEPOIS do efeito do player: na saída é descartado ANTES do player.release() (devolve a view ao ExoPlayer).
-    DisposableEffect(lentaAtiva, textureView, vsW, vsH) {
+    DisposableEffect(motorAtivo, melhorarLigado, textureView, vsW, vsH) {
         val tv = textureView
         var motor: CameraLentaGl? = null
-        if (lentaAtiva && tv != null && tv.isAvailable && vsW > 8 && vsH > 8) {
-            motor = CameraLentaGl(ctx, tv, player, vsW, vsH, { velocidade }) { msg ->
+        if (motorAtivo && tv != null && tv.isAvailable && vsW > 8 && vsH > 8) {
+            motor = CameraLentaGl(ctx, tv, player, vsW, vsH, { velocidade }, { lentaLigada && !lentaFalhou }, { melhorarLigado },
+                { msg ->   // a melhoria passou do orçamento / falhou: desliga SÓ ela, o vídeo segue
+                    melhorarLigado = false; prefs.melhorarImagem = false
+                    android.util.Log.w("CameraLenta", "melhoria: $msg")
+                    android.widget.Toast.makeText(ctx, "Melhorar imagem desligado (pesado demais neste aparelho)", android.widget.Toast.LENGTH_LONG).show()
+                }) { msg ->
                 lentaFalhou = true
+                if (melhorarLigado) { melhorarLigado = false; prefs.melhorarImagem = false
+                    android.widget.Toast.makeText(ctx, "Melhorar imagem indisponível aqui — reprodução normal", android.widget.Toast.LENGTH_LONG).show() }
                 hud = "Câmera lenta suave indisponível aqui — reprodução normal"
                 android.util.Log.w("CameraLenta", msg)
             }.also { it.iniciar() }
@@ -827,6 +837,15 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                                 },
                             )
                             DropdownMenuItem(
+                                text = { Text(if (melhorarLigado) "Melhorar imagem: ligado" else "Melhorar imagem: desligado") },
+                                onClick = {
+                                    melhorarLigado = !melhorarLigado; prefs.melhorarImagem = melhorarLigado
+                                    if (melhorarLigado) lentaFalhou = false
+                                    hud = if (melhorarLigado) "Melhorar imagem ligado (nitidez, desbloqueio, cor)" else "Melhorar imagem desligado"
+                                    menuPlayer = false
+                                },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Melhores momentos") },
                                 onClick = { menuPlayer = false; momentosAberto = true },
                             )
@@ -908,8 +927,10 @@ fun PlayerTela(video: Video, act: MainActivity, sts: SharedTransitionScope, avs:
                     B(Icons.Default.Forward10, "+10s") { player.seekForward() }
                     B(Icons.Default.SkipNext, "Próxima", segs.isNotEmpty()) { proxima() }
                     Text("${fmt(pos)} / ${fmt(dur)}", Modifier.weight(1f).padding(start = 4.dp), color = Color.White, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                    Text("${velocidade}x", Modifier.toque {
-                        val l = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f); velocidade = l[(l.indexOf(velocidade) + 1) % l.size]; player.setPlaybackSpeed(velocidade)
+                    Text(CameraLentaLogica.rotulo(velocidade), Modifier.toque {
+                        velocidade = CameraLentaLogica.proximaVelocidade(velocidade)
+                        // pitch = 1 (correção de tom); acima de 2× o ExoPlayer descarta os quadros atrasados do decodificador para manter a fluidez
+                        player.playbackParameters = androidx.media3.common.PlaybackParameters(velocidade, 1f)
                     }.padding(6.dp), color = Color.White, style = MaterialTheme.typography.labelMedium)
                     Text(modo.rotulo, Modifier.toque { modo = Modo.entries[(modo.ordinal + 1) % Modo.entries.size]; hud = modo.rotulo }.padding(6.dp),
                         color = Color.White, style = MaterialTheme.typography.labelMedium)

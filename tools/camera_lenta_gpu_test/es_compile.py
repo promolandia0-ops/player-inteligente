@@ -42,7 +42,7 @@ def link(vs,fs,name):
     print("ok",name); return True
 vs=hdr+open(SH+'quad.vert').read()
 res=[]
-for n in ['luma','down','smooth','interp','stat']:
+for n in ['luma','down','smooth','interp','stat','conf','temporal','stat2','enhance']:
     res.append(link(vs,hdr+open(SH+n+'.frag').read(),n))
 fl=open(SH+'flow.frag').read()
 for r in (1,2,3): res.append(link(vs,hdr+f"#define RADIUS {r}\n"+fl,f"flow{r}"))

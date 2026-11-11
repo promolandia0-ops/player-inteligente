@@ -36,7 +36,13 @@ import java.util.concurrent.TimeUnit
  * (nunca mistura cega) quando o fluxo não é confiável; corte de cena/flash/movimento rápido demais → repete o quadro inteiro.
  * Custo: 1 quadro de atraso (≈ 33 ms de mídia), imperceptível; o áudio fica em sincronia de mídia.
  *
- * Qualquer falha (EGL/GLSL/extensão/desempenho) chama [aoFalhar] e o chamador volta ao caminho normal.
+ * v1.3.24 — menos "pipocos": o fluxo ganha mediana + LIMITE de módulo, confiança por vetor (frente-trás + vizinhança + custo), máscara
+ * espalhada (feather) e estável no tempo (mistura com o par anterior), mistura contínua em vez de "vence o maior" e plano B global
+ * (crossfade/repetição) quando blocos ruins demais. Também hospeda o "Melhorar imagem" (nitidez adaptativa + desbloqueio leve +
+ * saturação/contraste, 1 passada final na GPU) — funciona com ou sem interpolação (a ≥ 1× o motor só repassa o quadro, sem fluxo).
+ *
+ * Qualquer falha (EGL/GLSL/extensão/desempenho) chama [aoFalhar] e o chamador volta ao caminho normal. A melhoria que passa do
+ * orçamento de tempo (ou falha ao compilar) se desliga SOZINHA ([aoMelhoriaFalhar]) e o vídeo continua.
  */
 class CameraLentaGl(
     private val ctx: Context,
@@ -44,6 +50,9 @@ class CameraLentaGl(
     private val player: ExoPlayer,
     larguraVideo: Int, alturaVideo: Int,
     private val velocidade: () -> Float,
+    private val lentaLigada: () -> Boolean,
+    private val melhorar: () -> Boolean,
+    private val aoMelhoriaFalhar: (String) -> Unit,
     private val aoFalhar: (String) -> Unit,
 ) {
     companion object {
@@ -89,7 +98,11 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
     private val quadros = IntArray(2)                          // RGBA8 cheio
     private val luma = Array(2) { IntArray(NIVEIS) }           // R8, por quadro
     private val fluxoAB = IntArray(NIVEIS); private val fluxoBA = IntArray(NIVEIS)   // RGBA16F por nível
-    private var fabS = 0; private var fbaS = 0                 // mediana, nível 0
+    private var fabS = 0; private var fbaS = 0                 // mediana + limite, nível 0
+    private var fabC = 0; private var fbaC = 0                 // + confiança (conf.frag)
+    private val fabT = IntArray(2); private val fbaT = IntArray(2)   // final: confiança espalhada + estável no tempo (ping-pong)
+    private var idxT = 0; private var histT = false
+    private var compo = 0                                      // quadro interpolado (RGBA8, tamanho cheio) quando há melhoria
     private var texStat = 0
     private var tamanhos = Array(NIVEIS) { 0 to 0 }
     private var nivelDesempenho = 0
@@ -97,6 +110,10 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
 
     // ---- estado de apresentação ----
     private val ritmo = CameraLentaLogica.Ritmo()
+    private val global = CameraLentaLogica.Global()
+    private val guardaMel = CameraLentaLogica.GuardaMelhoria()
+    @Volatile private var melhoriaOk = true; @Volatile private var melhoriaOff = false
+    private var lumaValida = false; private var contDesenho = 0; private var ultimoDesenhoNs = 0L; private var continuoAnterior = false
     private val guarda = CameraLentaLogica.Guarda()
     private var cur = 0; private var vistos = 0
     private var temPar = false           // há (prev, cur) com fluxo calculado/pendente
@@ -105,7 +122,7 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
     private var sujo = true
     private var rodandoCoreografo = false
     private val filaPts = ConcurrentLinkedQueue<LongArray>()   // [releaseNs, ptsUs]
-    private val statBuf = ByteBuffer.allocateDirect(16 * 9 * 4)
+    private val statBuf = ByteBuffer.allocateDirect(16 * 18 * 4)
 
     private val metaListener = VideoFrameMetadataListener { pts, releaseNs, _, _ ->
         filaPts.add(longArrayOf(releaseNs, pts)); while (filaPts.size > 24) filaPts.poll()
@@ -115,7 +132,7 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
     /** Main thread. Prepara o GL na thread própria; quando pronto, troca a saída do ExoPlayer para o motor. */
     fun iniciar() {
         h.post {
-            try { initGl(); main.post { if (!parado) trocarSaida() } }
+            try { initGl(); if (!melhoriaOk) desligarMelhoria("shader não compilou"); main.post { if (!parado) trocarSaida() } }
             catch (t: Throwable) { falhar("GL: ${t.javaClass.simpleName}: ${t.message}", t) }
         }
     }
@@ -204,6 +221,9 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
         prog("oes", COPIA_OES)   // #extension precisa vir antes de qualquer outro token: shader completo próprio
         prog("luma", HEADER + ler("luma.frag")); prog("down", HEADER + ler("down.frag"))
         prog("smooth", HEADER + ler("smooth.frag")); prog("interp", HEADER + ler("interp.frag")); prog("stat", HEADER + ler("stat.frag"))
+        prog("conf", HEADER + ler("conf.frag")); prog("temporal", HEADER + ler("temporal.frag")); prog("stat2", HEADER + ler("stat2.frag"))
+        // A melhoria é opcional: se o shader dela não compilar, só ela fica de fora (o resto do motor segue).
+        try { prog("enhance", HEADER + ler("enhance.frag")) } catch (t: Throwable) { melhoriaOk = false; Log.w(TAG, "enhance: ${t.message}") }
         val fl = ler("flow.frag")
         for (r in 1..3) prog("flow$r", HEADER + "#define RADIUS $r\n" + fl)
     }
@@ -238,10 +258,11 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
     private fun alocarTexturas() {
         if (quadros[0] == 0) {
             for (i in 0..1) quadros[i] = novaTex(fw, fh, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE)
-            texStat = novaTex(16, 9, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, GLES30.GL_NEAREST)
+            texStat = novaTex(16, 18, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, GLES30.GL_NEAREST)
+            compo = novaTex(fw, fh, GLES30.GL_RGBA8, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE)
         }
         for (i in 0..1) { apagar(luma[i]); }
-        apagar(fluxoAB); apagar(fluxoBA); apagar(intArrayOf(fabS, fbaS))
+        apagar(fluxoAB); apagar(fluxoBA); apagar(intArrayOf(fabS, fbaS, fabC, fbaC)); apagar(fabT); apagar(fbaT)
         val w0 = CameraLentaLogica.larguraFluxo(nivelDesempenho); val h0 = (w0.toLong() * fh / fw).toInt().coerceAtLeast(8)
         tamanhos = Array(NIVEIS) { maxOf(w0 shr it, 8) to maxOf(h0 shr it, 8) }
         for (i in 0..1) for (l in 0 until NIVEIS) luma[i][l] = novaTex(tamanhos[l].first, tamanhos[l].second, GLES30.GL_R8, GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE)
@@ -251,7 +272,9 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
         }
         fabS = novaTex(tamanhos[0].first, tamanhos[0].second, GLES30.GL_RGBA16F, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT)
         fbaS = novaTex(tamanhos[0].first, tamanhos[0].second, GLES30.GL_RGBA16F, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT)
-        temPar = false; statPendente = false
+        fun f16() = novaTex(tamanhos[0].first, tamanhos[0].second, GLES30.GL_RGBA16F, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT)
+        fabC = f16(); fbaC = f16(); for (i in 0..1) { fabT[i] = f16(); fbaT[i] = f16() }
+        temPar = false; statPendente = false; histT = false; lumaValida = false; global.zerar()
     }
 
     private fun alvo(tex: Int, w: Int, hh: Int) {
@@ -278,10 +301,12 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
             GLES30.glUniform1i(u("oes", "uOes"), 0); GLES30.glUniformMatrix4fv(u("oes", "uTransform"), 1, false, xform, 0)
             desenharTriangulo()
-            piramide(dest)
-            val desc = ritmo.novoQuadro(agora, pts, velocidade())
+            val interpolar = lentaLigada() && velocidade() < 0.999f
+            if (interpolar) piramide(dest)
+            val desc = ritmo.novoQuadro(agora, pts, velocidade()) || !interpolar || !lumaValida
+            lumaValida = interpolar
             val anterior = cur; cur = dest; vistos++
-            if (desc || vistos < 2) { temPar = false; corte = false; statPendente = false }
+            if (desc || vistos < 2) { temPar = false; corte = false; statPendente = false; histT = false; global.zerar() }
             else {
                 fluxo(anterior, cur)
                 temPar = true; corte = false; statPendente = true; statEmitidoNs = agora
@@ -333,12 +358,33 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
             }
             val s = if (dir == 0) fabS else fbaS
             alvo(s, tamanhos[0].first, tamanhos[0].second)
-            GLES30.glUseProgram(progs.getValue("smooth")); ligar(0, saida[0]); GLES30.glUniform1i(u("smooth", "uFlow"), 0); desenharTriangulo()
+            GLES30.glUseProgram(progs.getValue("smooth")); ligar(0, saida[0]); GLES30.glUniform1i(u("smooth", "uFlow"), 0)
+            GLES30.glUniform1f(u("smooth", "uMax"), CameraLentaLogica.vetorMax(tamanhos[0].first)); desenharTriangulo()
         }
-        // estatística (corte de cena): 16×9 blocos do custo A→B e contraste de A
+        // confiança por vetor (frente-trás + vizinhança + custo), nos dois sentidos
+        val (w0, h0) = tamanhos[0]
+        for (dir in 0..1) {
+            alvo(if (dir == 0) fabC else fbaC, w0, h0); GLES30.glUseProgram(progs.getValue("conf"))
+            ligar(0, if (dir == 0) fabS else fbaS); ligar(1, if (dir == 0) fbaS else fabS)
+            GLES30.glUniform1i(u("conf", "uF"), 0); GLES30.glUniform1i(u("conf", "uG"), 1); desenharTriangulo()
+        }
+        // espalha (feather) a confiança e estabiliza no tempo (mistura com o par anterior)
+        val novo = 1 - idxT
+        for (dir in 0..1) {
+            val dst = if (dir == 0) fabT[novo] else fbaT[novo]; val prv = if (dir == 0) fabT[idxT] else fbaT[idxT]
+            alvo(dst, w0, h0); GLES30.glUseProgram(progs.getValue("temporal"))
+            ligar(0, if (dir == 0) fabC else fbaC); ligar(1, prv)
+            GLES30.glUniform1i(u("temporal", "uCur"), 0); GLES30.glUniform1i(u("temporal", "uPrev"), 1)
+            GLES30.glUniform1f(u("temporal", "uPrevOn"), if (histT) 1f else 0f); desenharTriangulo()
+        }
+        idxT = novo; histT = true
+        // estatística: (1) corte de cena (custo/contraste, 16×9) e (2) confiança global (blocos ruins, 16×9) numa só textura 16×18
         alvo(texStat, 16, 9)
         GLES30.glUseProgram(progs.getValue("stat")); ligar(0, fabS); ligar(1, luma[a][0])
         GLES30.glUniform1i(u("stat", "uFlow"), 0); GLES30.glUniform1i(u("stat", "uLuma"), 1); desenharTriangulo()
+        GLES30.glViewport(0, 9, 16, 9)
+        GLES30.glUseProgram(progs.getValue("stat2")); ligar(0, fabT[idxT]); ligar(1, luma[a][0]); ligar(2, luma[b][0])
+        GLES30.glUniform1i(u("stat2", "uFlow"), 0); GLES30.glUniform1i(u("stat2", "uLumaA"), 1); GLES30.glUniform1i(u("stat2", "uLumaB"), 2); desenharTriangulo()
         GLES30.glFlush()
     }
 
@@ -347,11 +393,14 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, texStat, 0)
         statBuf.clear()
-        GLES30.glReadPixels(0, 0, 16, 9, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, statBuf)
+        GLES30.glReadPixels(0, 0, 16, 18, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, statBuf)
         val computeNs = System.nanoTime() - statEmitidoNs
-        val b = ByteArray(16 * 9 * 4); statBuf.rewind(); statBuf.get(b)
-        val (custo, contraste) = CameraLentaLogica.decodificarEstat(b)
+        val b = ByteArray(16 * 18 * 4); statBuf.rewind(); statBuf.get(b)
+        val (custo, contraste) = CameraLentaLogica.decodificarEstat(b.copyOfRange(0, 16 * 9 * 4))
         corte = CameraLentaLogica.ehCorte(custo, contraste)
+        val (ruim, dif) = CameraLentaLogica.decodificarEstat2(b.copyOfRange(16 * 9 * 4, 16 * 18 * 4))
+        global.atualizar(ruim, dif)
+        if (corte) { histT = false; global.zerar() }
         statPendente = false
         when (guarda.registrar(computeNs, ritmo.periodoNs)) {
             CameraLentaLogica.Guarda.Acao.REDUZIR -> { nivelDesempenho = guarda.nivel; alocarTexturas(); vistos = 0 }
@@ -387,29 +436,60 @@ void main() { oColor = vec4(texture(uOes, (uTransform * vec4(vUv, 0.0, 1.0)).xy)
     private fun desenhar(frameNs: Long) {
         if (parado || falhou || janela == EGL14.EGL_NO_SURFACE || vistos == 0) return
         try {
+            val mel = melhorar() && melhoriaOk && !melhoriaOff
+            if (mel) {
+                // quadros perdidos em sequência contínua (o desenho anterior já pedia o próximo vsync)
+                if (continuoAnterior && ultimoDesenhoNs != 0L && guardaMel.intervalo(frameNs - ultimoDesenhoNs)) { desligarMelhoria("quadros perdidos"); return desenhar(frameNs) }
+            } else guardaMel.zerar()
+            ultimoDesenhoNs = frameNs
             if (statPendente && temPar) resolverEstat()
             if (falhou) return
             val t = if (temPar) ritmo.t(frameNs) else 1f
             val modo = when {
-                !temPar -> 2                                  // sem par (1º quadro/seek): mostra o quadro atual direto
+                !temPar -> 2                                  // sem par (1º quadro/seek/≥ 1×): mostra o quadro atual direto
                 statPendente || corte -> if (t >= 0.999f) 2 else 1   // sem fluxo ainda / corte: repete A, depois B
                 else -> 0
             }
             val w = IntArray(1); val hh = IntArray(1)
             EGL14.eglQuerySurface(dpy, janela, EGL14.EGL_WIDTH, w, 0); EGL14.eglQuerySurface(dpy, janela, EGL14.EGL_HEIGHT, hh, 0)
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-            GLES30.glViewport(0, 0, maxOf(w[0], 1), maxOf(hh[0], 1))
             val prev = 1 - cur
-            GLES30.glUseProgram(progs.getValue("interp"))
-            ligar(0, if (temPar) quadros[prev] else quadros[cur]); ligar(1, quadros[cur]); ligar(2, fabS); ligar(3, fbaS)
-            GLES30.glUniform1i(u("interp", "uA"), 0); GLES30.glUniform1i(u("interp", "uB"), 1)
-            GLES30.glUniform1i(u("interp", "uFab"), 2); GLES30.glUniform1i(u("interp", "uFba"), 3)
-            GLES30.glUniform1f(u("interp", "uT"), t); GLES30.glUniform1i(u("interp", "uModo"), modo)
-            desenharTriangulo()
+            val passaInterp = modo != 2 || !mel          // com melhoria e sem interpolar: a melhoria lê o quadro direto (0 passadas extras)
+            var fonte = quadros[cur]
+            if (passaInterp) {
+                if (mel) alvo(compo, fw, fh) else { GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0); GLES30.glViewport(0, 0, maxOf(w[0], 1), maxOf(hh[0], 1)) }
+                GLES30.glUseProgram(progs.getValue("interp"))
+                ligar(0, if (temPar) quadros[prev] else quadros[cur]); ligar(1, quadros[cur]); ligar(2, fabT[idxT]); ligar(3, fbaT[idxT])
+                GLES30.glUniform1i(u("interp", "uA"), 0); GLES30.glUniform1i(u("interp", "uB"), 1)
+                GLES30.glUniform1i(u("interp", "uFab"), 2); GLES30.glUniform1i(u("interp", "uFba"), 3)
+                GLES30.glUniform1f(u("interp", "uT"), t); GLES30.glUniform1i(u("interp", "uModo"), modo)
+                GLES30.glUniform1f(u("interp", "uFb"), global.peso); GLES30.glUniform1f(u("interp", "uFbCross"), if (global.crossfade) 1f else 0f)
+                desenharTriangulo()
+                fonte = compo
+            }
+            if (mel) {
+                // amostra o tempo de GPU da passada de melhoria em 1 de cada 8 desenhos (glFinish só aí)
+                val medir = (contDesenho++ and 7) == 0
+                if (medir) GLES30.glFinish()
+                val t0 = System.nanoTime()
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0); GLES30.glViewport(0, 0, maxOf(w[0], 1), maxOf(hh[0], 1))
+                GLES30.glUseProgram(progs.getValue("enhance")); ligar(0, fonte)
+                GLES30.glUniform1i(u("enhance", "uSrc"), 0); GLES30.glUniform1f(u("enhance", "uForca"), 0.6f)
+                desenharTriangulo()
+                if (medir) { GLES30.glFinish(); if (guardaMel.amostra(System.nanoTime() - t0)) { desligarMelhoria("lenta demais"); return desenhar(frameNs) } }
+            }
             EGL14.eglSwapBuffers(dpy, janela)
             sujo = false
-            if (t < 1f || statPendente || sujo) agendar()
+            continuoAnterior = t < 1f || statPendente
+            if (continuoAnterior) agendar()
         } catch (e: Throwable) { falhar("desenho: ${e.javaClass.simpleName}: ${e.message}", e) }
+    }
+
+    /** Desliga só a melhoria (o vídeo e a interpolação seguem) e avisa a interface (toast). */
+    private fun desligarMelhoria(motivo: String) {
+        if (melhoriaOff) return
+        melhoriaOff = true
+        Log.w(TAG, "melhoria desligada: $motivo")
+        main.post { if (!parado) aoMelhoriaFalhar(motivo) }
     }
 
     private fun liberarGl() {

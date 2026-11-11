@@ -16,11 +16,61 @@ class CameraLentaTest {
         assertFalse("desligada", CameraLentaLogica.ativa(false, 0.25f)); assertFalse(CameraLentaLogica.ativa(true, 0f))
     }
 
-    @Test fun audioSilenciosoAbaixoDeMeioXSoComORecursoAtivo() {
-        assertEquals(0f, CameraLentaLogica.volume(0.25f, true), 0f)
-        assertEquals(1f, CameraLentaLogica.volume(0.5f, true), 0f)     // ≥0,5×: ExoPlayer (Sonic) corrige o tom
-        assertEquals(1f, CameraLentaLogica.volume(0.75f, true), 0f)
-        assertEquals("recurso desligado: áudio como sempre", 1f, CameraLentaLogica.volume(0.25f, false), 0f)
+    @Test fun audioSilenciosoAbaixoDeUmQuartoDeX() {
+        assertEquals(0f, CameraLentaLogica.volume(0.1f, true), 0f); assertEquals(0f, CameraLentaLogica.volume(0.125f, false), 0f)
+        assertEquals(1f, CameraLentaLogica.volume(0.25f, true), 0f)     // ≥0,25×: ExoPlayer (Sonic) corrige o tom
+        assertEquals(1f, CameraLentaLogica.volume(0.5f, true), 0f); assertEquals(1f, CameraLentaLogica.volume(0.75f, true), 0f)
+        for (v in listOf(1f, 2f, 3f, 6f)) assertEquals(1f, CameraLentaLogica.volume(v, false), 0f)
+    }
+
+    @Test fun velocidadesVao0_1AteSeisECicla() {
+        val l = CameraLentaLogica.VELOCIDADES
+        assertEquals(listOf(0.1f, 0.125f, 0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f, 5f, 6f), l)
+        assertEquals(l.sorted(), l); assertEquals(6f, l.max(), 0f); assertEquals(0.1f, l.min(), 0f)
+        assertEquals(0.125f, CameraLentaLogica.proximaVelocidade(0.1f), 0f); assertEquals(6f, CameraLentaLogica.proximaVelocidade(5f), 0f)
+        assertEquals("cicla", 0.1f, CameraLentaLogica.proximaVelocidade(6f), 0f)
+        assertEquals("valor fora da lista → segue a partir do mais próximo", 1.25f, CameraLentaLogica.proximaVelocidade(1.02f), 0f)
+        assertEquals("0.125x", CameraLentaLogica.rotulo(0.125f)); assertEquals("1x", CameraLentaLogica.rotulo(1f)); assertEquals("1.5x", CameraLentaLogica.rotulo(1.5f))
+        assertEquals("0.1x", CameraLentaLogica.rotulo(0.1f)); assertEquals("6x", CameraLentaLogica.rotulo(6f))
+        // interpolação só abaixo de 1×, em qualquer velocidade da lista
+        for (v in l) assertEquals("v=$v", v < 1f, CameraLentaLogica.ativa(true, v))
+    }
+
+    @Test fun motorLigaComInterpolacaoOuMelhoria() {
+        assertTrue(CameraLentaLogica.motorAtivo(true, false, 0.5f)); assertFalse(CameraLentaLogica.motorAtivo(true, false, 1f))
+        assertTrue("melhoria sozinha a 1×", CameraLentaLogica.motorAtivo(true, true, 1f)); assertTrue(CameraLentaLogica.motorAtivo(false, true, 6f))
+        assertFalse(CameraLentaLogica.motorAtivo(false, false, 0.25f))
+    }
+
+    @Test fun planoBGlobalSuavizadoNoTempoECrossfadeSoSeQuaseParado() {
+        val g = CameraLentaLogica.Global()
+        g.atualizar(0.1f, 0.1f); assertEquals(0f, g.peso, 0f)                  // poucos blocos ruins: interpola normal
+        g.atualizar(0.9f, 0.01f); assertEquals("1 par ruim só leva meio caminho (sem salto)", 0.5f, g.peso, 0.01f); assertTrue(g.crossfade)
+        g.atualizar(0.9f, 0.1f); assertEquals(0.75f, g.peso, 0.01f); assertFalse("A e B diferentes → repetição", g.crossfade)
+        repeat(6) { g.atualizar(0.1f, 0.1f) }; assertTrue(g.peso < 0.02f)
+        g.atualizar(0.42f, 0.01f); assertTrue("meio termo: parcial", g.peso in 0.1f..0.5f)
+        g.zerar(); assertEquals(0f, g.peso, 0f)
+    }
+
+    @Test fun estatistica2DecodificaFracaoRuimEDiferenca() {
+        val b = ByteArray(144 * 4); for (i in 0 until 144) { b[4 * i] = 64; b[4 * i + 1] = 128.toByte() }
+        val (r, m) = CameraLentaLogica.decodificarEstat2(b)
+        assertEquals(64 / 255f, r, 0.002f); assertEquals(128 / 255f / 8f, m, 0.001f)
+        assertEquals(0f to 0f, CameraLentaLogica.decodificarEstat2(ByteArray(0)))
+        assertEquals(0.09f * 384, CameraLentaLogica.vetorMax(384), 1e-3f)
+    }
+
+    @Test fun guardaDaMelhoriaDesligaPorTempoOuPorQuadrosPerdidos() {
+        val g = CameraLentaLogica.GuardaMelhoria(); val bom = 2 * ms; val ruim = 12 * ms
+        repeat(4) { assertFalse(g.amostra(ruim)) }; assertFalse("um bom no meio zera", g.amostra(bom))
+        repeat(4) { assertFalse(g.amostra(ruim)) }; assertTrue("5 ruins seguidos → desliga", g.amostra(ruim))
+        val h = CameraLentaLogica.GuardaMelhoria(); val vs = 16_666_667L
+        repeat(60) { assertFalse("60 Hz estável", h.intervalo(vs)) }
+        var desligou = false
+        for (i in 1..40) if (h.intervalo(if (i % 3 == 0) 3 * vs else vs)) desligou = true
+        assertTrue("1 em 3 vsyncs perdido → desliga", desligou)
+        val k = CameraLentaLogica.GuardaMelhoria(); repeat(100) { k.intervalo(vs) }
+        repeat(60) { assertFalse("pausa/seek longa não conta", k.intervalo(2_000 * ms)) }
     }
 
     private fun enc(v: Float): Pair<Int, Int> { val s = (v * 4f).coerceIn(0f, 0.9999f) * 255f; val hi = Math.floor(s.toDouble()).toInt(); return hi to Math.round((s - hi) * 255f) }
@@ -113,11 +163,11 @@ class CameraLentaTest {
     private fun asset(n: String) = File("src/main/assets/camera_lenta/$n").readText()
 
     @Test fun shadersExistemSemVersaoPropriaEOMotorUsaSoUniformsQueExistem() {
-        val nomes = listOf("quad.vert", "luma.frag", "down.frag", "flow.frag", "smooth.frag", "interp.frag", "stat.frag")
+        val nomes = listOf("quad.vert", "luma.frag", "down.frag", "flow.frag", "smooth.frag", "interp.frag", "stat.frag", "conf.frag", "temporal.frag", "stat2.frag", "enhance.frag")
         for (n in nomes) { val s = asset(n); assertTrue(n, s.length > 50); assertFalse("$n não pode ter #version (o motor injeta)", s.contains("#version")) }
         val kt = File("src/main/java/br/geracaoai/player/CameraLentaGl.kt").readText()
         val arq = mapOf("oes" to null, "luma" to "luma.frag", "down" to "down.frag", "smooth" to "smooth.frag", "interp" to "interp.frag",
-            "stat" to "stat.frag", "flow1" to "flow.frag", "flow2" to "flow.frag", "flow3" to "flow.frag")
+            "stat" to "stat.frag", "conf" to "conf.frag", "temporal" to "temporal.frag", "stat2" to "stat2.frag", "enhance" to "enhance.frag", "flow1" to "flow.frag", "flow2" to "flow.frag", "flow3" to "flow.frag")
         Regex("""u\(\s*"([a-z0-9]+)"\s*,\s*"(\w+)"\s*\)""").findAll(kt).forEach { m ->
             val (prog, uni) = m.destructured
             val a = arq[prog] ?: return@forEach

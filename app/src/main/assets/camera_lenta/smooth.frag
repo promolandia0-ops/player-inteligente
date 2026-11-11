@@ -1,5 +1,8 @@
 // Mediana 3×3 (por componente) do fluxo: remove casamentos isolados errados sem borrar bordas de movimento.
+// v1.3.24: depois da mediana, LIMITA o módulo do vetor a uMax (px do nível 0): vetores absurdos (casamento errado) não viram "pipocos".
+// w = 1 normal, 0 se o vetor foi cortado (conf.frag usa para derrubar a confiança).
 uniform sampler2D uFlow;
+uniform float uMax;
 in vec2 vUv;
 layout(location = 0) out vec4 oColor;
 void main() {
@@ -19,5 +22,9 @@ void main() {
         while (j >= 0 && vy[j] > ky) { vy[j + 1] = vy[j]; j--; }
         vy[j + 1] = ky;
     }
-    oColor = vec4(vx[4], vy[4], cz, 1.0);
+    vec2 v = vec2(vx[4], vy[4]);
+    float m = length(v);
+    float cut = 1.0;
+    if (m > uMax) { v *= uMax / m; cut = 0.0; }
+    oColor = vec4(v, cz, cut);
 }

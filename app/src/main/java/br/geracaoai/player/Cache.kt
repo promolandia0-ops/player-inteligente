@@ -75,6 +75,8 @@ class Prefs(ctx: Context) {
         set(v) = p.edit().putInt("zoom_modo", v).putBoolean("zoom_auto", v != 0).apply()
     /** Câmera lenta suave (interpolação de quadros na GPU) abaixo de 1×. Ligada por padrão; cai sozinha p/ o normal se a GPU não der conta. */
     var lentaSuave: Boolean get() = p.getBoolean("lenta_suave", true); set(v) = p.edit().putBoolean("lenta_suave", v).apply()
+    /** Melhorar imagem (nitidez adaptativa + desbloqueio leve + cor, na GPU). DESLIGADO por padrão; se travar/pesar, desliga sozinho. */
+    var melhorarImagem: Boolean get() = p.getBoolean("melhorar_imagem", false); set(v) = p.edit().putBoolean("melhorar_imagem", v).apply()
     var cats: Set<Categoria>
         get() = p.getStringSet("cats", Categoria.entries.map { it.name }.toSet())!!.mapNotNull { runCatching { Categoria.valueOf(it) }.getOrNull() }.toSet()
         set(v) = p.edit().putStringSet("cats", v.map { it.name }.toSet()).apply()
