@@ -14,3 +14,4 @@ org_scan_state.properties
 
 # local backup of sherpa AAR with bundled ORT (do not ship)
 app/libs/*.aar.full
+__pycache__/
